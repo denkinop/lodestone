@@ -32,11 +32,39 @@ export interface GameCharacter {
   homeWorld: string
   currentWorld: string
   race: string | null
+  tribe: string | null
   gender: string | null
+  birthday: string | null
+  deity: string | null
   classJobId: number | null
   level: number | null
   detailError: string | null
-  gear: { slot: string; model: number; modelType: number; variant: number; stain1: number; stain2: number }[]
+  gear: GameGear[]
+  portraitRoot: string
+  revision: string
+}
+
+export interface GameGear {
+  slot: string
+  label: string
+  model: number
+  variant: number
+  loaded: boolean
+  candidates: { id: number; name: string; icon: number; details?: GameItemDetails }[]
+  stains: ({ name: string; color: string | null } | null)[]
+}
+
+export interface GameItemDetails {
+  category: string
+  rarity: number
+  itemLevel: number
+  equipLevel: number
+  jobCategory: string
+  physicalDamage: number
+  magicalDamage: number
+  physicalDefense: number
+  magicalDefense: number
+  attributes: { name: string; value: number }[]
 }
 
 export interface GameResponse {
@@ -45,13 +73,13 @@ export interface GameResponse {
   characters: GameCharacter[]
   error: string | null
   notice: string | null
+  current: GameCharacter | null
+  currentIndex: number | null
+  cached: boolean
 }
 
 export interface CommunityStatus {
   state: string
-  detail: string
-  bindings: { character: string; world: string }[]
-  jobsStatus: string
   jobProfile: { character: string; area: string; world: string; levels: Record<string, number> } | null
 }
 
@@ -79,12 +107,12 @@ export const beginGameLogin = (id: string, mode: 'phone' | 'scan' | 'saved', acc
   invokeClient<GameResponse>('BeginGameLogin', [id, mode, account, areaId, remember])
 export const selectServiceAccount = (id: string, index: number) =>
   invokeClient<GameResponse>('SelectServiceAccount', [id, index])
+export const refreshLobby = (id: string, index: number) => invokeClient<GameResponse>('RefreshLobby', [id, index])
+export const chooseGameCharacter = (id: string) => invokeClient<GameResponse>('ChooseGameCharacter', [id])
 export const getGameProgress = (id: string) => invokeClient<GameProgress | null>('GetGameProgress', [id])
 export const cancelGameOperation = (id: string) => invokeClient<boolean>('CancelGameOperation', [id])
 export const signOutGame = () => invokeClient<boolean>('SignOutGame')
 export const getCommunityStatus = () => invokeClient<CommunityStatus | null>('GetCommunityStatus')
-export const openCommunity = () => invokeClient<boolean>('OpenCommunity')
-export const readCommunityJobs = () => invokeClient<boolean>('ReadCommunityJobs')
 export const selectCommunityCharacter = (id: string) => invokeClient<string | null>('SelectCommunityCharacter', [id])
 
 export async function preparePreview(characterId: number) {
@@ -96,3 +124,18 @@ export async function preparePreview(characterId: number) {
   }
   throw new Error('此角色没有可用的预览场景')
 }
+
+export async function prepareGamePreview(characterId: string, requestId: string) {
+  const response = await invokeClient<{
+    scene: string | null; textureRoot: string | null; iconRoot: string | null; error: string | null
+    full: boolean; portrait: boolean
+  }>('PrepareGamePreview', [characterId, requestId])
+  if (!response.scene || !response.textureRoot || !response.iconRoot)
+    throw new Error(response.error || '此角色没有可用的预览场景')
+  return { scene: response.scene, textureRoot: response.textureRoot, iconRoot: response.iconRoot,
+    full: response.full, portrait: response.portrait }
+}
+
+export const releaseGamePreview = (id: string) => invokeClient<boolean>('ReleaseGamePreview', [id])
+export const saveGamePortrait = (id: string, mode: 'full' | 'portrait', png: string) =>
+  invokeClient<boolean>('SaveGamePortrait', [id, mode, png])

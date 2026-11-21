@@ -4,6 +4,11 @@ export interface Item {
   id: number
   name: string
   icon_id?: number
+  gameIcon?: number
+  category?: string
+  rarity?: number
+  job_category?: string
+  attributes?: { name: string; value: number }[]
   item_level?: number
   equip_level?: number
   physical_damage?: number
@@ -22,7 +27,7 @@ export interface Equipment {
 }
 
 export interface Character {
-  id: number
+  id: number | string
   name: string
   world: string
   dc: string
@@ -33,17 +38,19 @@ export interface Character {
   deity: string | null
   gear: Equipment[]
   jobProgress?: JobProgress
+  game?: { portraitRoot: string; jobId: number | null; level: number | null; appearance: boolean; detailError: string | null }
 }
 
 export function asset(path: string) {
   return import.meta.env.BASE_URL + 'demo/' + path
 }
 
-export function icon(item?: Item) {
+export function icon(item?: Item, iconRoot?: string) {
+  if (item?.gameIcon && iconRoot) return `${iconRoot}${item.gameIcon}.png`
   return item?.icon_id ? asset('icons/' + item.icon_id + '.png') : undefined
 }
 
-export function portrait(id: number, mode = 'full') {
+export function portrait(id: number | string, mode = 'full') {
   return asset('portraits/' + id + '-' + mode + '.png')
 }
 

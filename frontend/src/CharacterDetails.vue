@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { icon, wikiUrl, type Character, type Equipment } from './demo'
 import EquipmentRail from './EquipmentRail.vue'
 import JobLevels from './JobLevels.vue'
@@ -7,26 +7,28 @@ import PreviewStage from './PreviewStage.vue'
 import UiIcon from './UiIcon.vue'
 
 const props = defineProps<{ character: Character }>()
-const selected = ref<Equipment | null>(null)
+const selected = shallowRef<Equipment | null>(null)
 const pinned = ref(false)
-const candidate = ref(0)
-const position = ref({ x: 0, y: 0 })
+const position = ref<{ x: number; y: number }>()
+const tooltip = ref<HTMLElement>()
+const iconRoot = ref('')
 let closeTimer: ReturnType<typeof setTimeout> | undefined
 
 const fields = computed(() => [
   ['种族', props.character.race], ['部族', props.character.tribe], ['性别', props.character.gender],
   ['所属服务器', props.character.world], ['生日', props.character.birthday], ['守护神', props.character.deity],
 ] as const)
-const equipmentSlots = ['main_hand', 'off_hand', 'head', 'body', 'hands', 'legs', 'feet']
-const accessorySlots = ['ears', 'neck', 'wrists', 'right_ring', 'left_ring']
+const equipmentSlots = ['head', 'body', 'hands', 'legs', 'feet']
+const accessorySlots = ['off_hand', 'ears', 'neck', 'wrists', 'right_ring', 'left_ring']
 
 function gearFor(slots: string[]) {
   return slots.map(slot => props.character.gear.find(item => item.slot === slot)).filter(item => item !== undefined)
 }
 
+const mainHand = computed(() => gearFor(['main_hand']))
 const equipment = computed(() => gearFor(equipmentSlots))
 const accessories = computed(() => gearFor(accessorySlots))
-const item = computed(() => selected.value?.candidates[candidate.value])
+const item = computed(() => selected.value?.candidates[0])
 const itemStats = computed(() => {
   if (!item.value) return []
   return ([
@@ -50,22 +52,26 @@ function scheduleClose() {
   if (!pinned.value) closeTimer = setTimeout(close, 140)
 }
 
-function reveal(entry: Equipment, target: HTMLElement, pin: boolean) {
+async function reveal(entry: Equipment, target: HTMLElement, pin: boolean) {
   cancelTimer()
   if (pinned.value && !pin) return
   if (pinned.value && selected.value === entry) {
     close()
     return
   }
-  const box = target.getBoundingClientRect()
-  const width = Math.min(312, window.innerWidth - 28)
-  position.value = {
-    x: Math.min(window.innerWidth - width - 14, Math.max(14, box.left + box.width / 2 - width / 2)),
-    y: Math.max(12, Math.min(box.bottom + 8, window.innerHeight - 328)),
-  }
-  if (selected.value !== entry) candidate.value = 0
+  position.value = undefined
   selected.value = entry
   pinned.value = pin
+  await nextTick()
+  if (!tooltip.value || selected.value !== entry) return
+  const box = target.getBoundingClientRect()
+  const { offsetWidth: width, offsetHeight: height } = tooltip.value
+  const below = box.bottom + 8
+  const maxY = window.innerHeight - height - 12
+  position.value = {
+    x: Math.min(window.innerWidth - width - 14, Math.max(14, box.left + box.width / 2 - width / 2)),
+    y: Math.max(12, below <= maxY ? below : Math.min(box.top - height - 8, maxY)),
+  }
 }
 
 function onKey(event: KeyboardEvent) {
@@ -99,51 +105,61 @@ onBeforeUnmount(() => {
         </div>
       </dl>
     </section>
-    <JobLevels v-if="character.jobProgress" :progress="character.jobProgress" />
+    <JobLevels v-if="character.jobProgress || character.game" :progress="character.jobProgress ?? { source: 'community', current: null, levels: {} }" />
   </div>
 
   <div class="character-showcase">
-    <PreviewStage :character="character">
+    <PreviewStage :character="character" @resources="iconRoot = $event">
+      <template #main-hand>
+        <EquipmentRail label="主手" :items="mainHand" :selected="selected" :icon-root="iconRoot" @reveal="reveal" @dismiss="scheduleClose" />
+      </template>
       <template #equipment>
-        <EquipmentRail label="装备" :items="equipment" :selected="selected" @reveal="reveal" @dismiss="scheduleClose" />
+        <EquipmentRail label="装备" :items="equipment" :selected="selected" :icon-root="iconRoot" @reveal="reveal" @dismiss="scheduleClose" />
       </template>
       <template #accessories>
-        <EquipmentRail label="饰品" :items="accessories" :selected="selected" @reveal="reveal" @dismiss="scheduleClose" />
+        <EquipmentRail label="副手与饰品" :items="accessories" :selected="selected" :icon-root="iconRoot" @reveal="reveal" @dismiss="scheduleClose" />
       </template>
     </PreviewStage>
   </div>
 
   <Teleport to="body">
     <div v-if="selected && pinned" class="tooltip-cover" aria-hidden="true" @click="close"></div>
-    <section v-if="selected" id="item-detail" class="item-tooltip"
-      :style="{ '--tip-x': position.x + 'px', '--tip-y': position.y + 'px' }"
+    <section v-if="selected" id="item-detail" ref="tooltip" class="item-tooltip"
+      :style="position ? { '--tip-x': position.x + 'px', '--tip-y': position.y + 'px' } : { visibility: 'hidden' }"
       aria-label="装备详情" @mouseenter="cancelTimer" @mouseleave="scheduleClose">
-      <div class="tip-top">
-        <span class="tip-slot">{{ selected.label }} · {{ selected.candidates.length > 1 ? '同模候选' : '展示外观' }}</span>
+      <div class="tip-title">
+        <img v-if="icon(item, iconRoot)" :src="icon(item, iconRoot)" alt="" width="52" height="52">
+        <div class="tip-name">
+          <h3 :data-rarity="item?.rarity">{{ item?.name || '模型 ' + selected.model }}</h3>
+          <p>{{ item?.category || selected.label }}</p>
+        </div>
         <button type="button" class="icon-button" aria-label="关闭装备详情" @click="close"><UiIcon name="close" :size="17" /></button>
       </div>
-      <div class="tip-title">
-        <img v-if="icon(item)" :src="icon(item)" alt="" width="42" height="42">
-        <h3>{{ item?.name || '模型 ' + selected.model }}</h3>
-      </div>
-      <label v-if="selected.candidates.length > 1" class="tip-candidates">
-        <span>{{ selected.candidates.length }} 个同模候选</span>
-        <select v-model="candidate" aria-label="查看同模候选">
-          <option v-for="(option, index) in selected.candidates" :key="option.id" :value="index">{{ option.name }}</option>
-        </select>
-      </label>
-      <dl v-if="item" class="tip-stats">
-        <div v-if="item.item_level"><dt>物品品级</dt><dd>{{ item.item_level }}</dd></div>
-        <div v-if="item.equip_level"><dt>装备等级</dt><dd>{{ item.equip_level }}</dd></div>
+      <dl v-if="itemStats.length" class="tip-performance">
         <div v-for="[label, value] in itemStats" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
       </dl>
-      <div class="tip-model">
-        <span>模型 {{ selected.model }} · 变体 {{ selected.variant }}</span>
+      <p v-if="item?.item_level" class="tip-grade">品级 <strong>{{ item.item_level }}</strong></p>
+      <div v-if="item?.job_category || item?.equip_level" class="tip-requirements">
+        <p v-if="item.job_category">{{ item.job_category }}</p>
+        <p v-if="item.equip_level">{{ item.equip_level }} 级或更高</p>
+      </div>
+      <div v-if="item?.attributes?.length" class="tip-attributes">
+        <p>装备属性</p>
+        <dl>
+          <div v-for="attribute in item.attributes" :key="attribute.name">
+            <dt>{{ attribute.name }}</dt><dd>{{ attribute.value > 0 ? '+' : '' }}{{ attribute.value }}</dd>
+          </div>
+        </dl>
+      </div>
+      <div v-if="selected.stains.length" class="tip-dyes">
         <span v-for="(dye, index) in selected.stains" :key="index" class="tip-dye">
           <span v-if="dye.color" :style="{ backgroundColor: dye.color }"></span>{{ dye.name }}
         </span>
       </div>
-      <a v-if="item && item.id > 0" class="wiki-link" :href="wikiUrl(item)" target="_blank" rel="noopener noreferrer">在灰机 Wiki 查看</a>
+      <div v-if="item && item.id > 0" class="tip-footer">
+        <span v-if="selected.candidates.length > 1">外观参考</span>
+        <a class="wiki-link" :href="wikiUrl(item)" target="_blank" rel="noopener noreferrer">在灰机 Wiki 查看</a>
+      </div>
     </section>
   </Teleport>
 </template>

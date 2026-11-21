@@ -7,6 +7,7 @@ namespace Lodestone.Core.Lobby;
 public sealed record ServiceAccount(int Index, string Name);
 internal sealed record ServiceAccountRecord(int Index, ulong Id, string Name);
 public sealed record CharacterWorld(ushort Id, string Name);
+public sealed record CharacterBirthday(int Month, int Day);
 public sealed record CharacterEquipment(
     string Slot, ushort Model, ushort ModelType, ushort Variant, byte Stain1, byte Stain2);
 public sealed record CharacterAppearance(
@@ -31,6 +32,8 @@ public sealed record LobbyCharacter(
 {
     public int? ClassJobId { get; init; }
     public int? Level { get; init; }
+    public CharacterBirthday? Birthday { get; init; }
+    public int? GuardianDeityId { get; init; }
 }
 
 internal static class LobbyRecords
@@ -128,6 +131,18 @@ internal static class LobbyRecords
                 var level = job < LevelIndex.Length && levels.ValueKind == JsonValueKind.Array
                     && LevelIndex[job] < levels.GetArrayLength() ? ReadInteger(levels[LevelIndex[job]]) : null;
                 character = character with { ClassJobId = job, Level = level is > 0 and <= byte.MaxValue ? level : null };
+            }
+            // ClientSelectData places the nameday and patron after race, tribe and sex.
+            if (content.ValueKind == JsonValueKind.Array && content.GetArrayLength() >= 9)
+            {
+                var month = ReadInteger(content[6]);
+                var day = ReadInteger(content[7]);
+                var guardian = ReadInteger(content[8]);
+                character = character with
+                {
+                    Birthday = month is >= 1 and <= 12 && day is >= 1 and <= 32 ? new CharacterBirthday(month.Value, day.Value) : null,
+                    GuardianDeityId = guardian is >= 1 and <= 12 ? guardian : null,
+                };
             }
             var customize = content[13].EnumerateArray().Select(Number).ToArray();
             if (customize.Length < 26)

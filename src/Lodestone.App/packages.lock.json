@@ -14,10 +14,23 @@
           "Microsoft.Maui.Resizetizer": "10.0.110"
         }
       },
+      "BCnEncoder.Net": {
+        "type": "Transitive",
+        "resolved": "2.3.0",
+        "contentHash": "DJhHJiBJKXUXxlkkrv74ckzJb3wYxqIAZHjXD9G76kpsD0YyJOmqtNufHWEuJe0eH0tB1tCZn80/3JV2UVP7yQ==",
+        "dependencies": {
+          "CommunityToolkit.HighPerformance": "8.4.0"
+        }
+      },
       "BouncyCastle.Cryptography": {
         "type": "Transitive",
         "resolved": "2.7.0",
         "contentHash": "U+12df8UEWHgBi04YVf/Lgi2dy3SItlIYvHjjEVa/BngCQIzDCDRBk50DDByCfDvSbe5pRNFr3b7UrVK2kMcLw=="
+      },
+      "CommunityToolkit.HighPerformance": {
+        "type": "Transitive",
+        "resolved": "8.4.0",
+        "contentHash": "flxspiBs0G/0GMp7IK2J2ijV9bTG6hEwFc/z6ekHqB6nwRJ4Ry2yLdx+TkbCUYFCl4XhABkAwomeKbT6zM2Zlg=="
       },
       "Microsoft.Extensions.Configuration": {
         "type": "Transitive",
@@ -327,6 +340,7 @@
       "lodestone.core": {
         "type": "Project",
         "dependencies": {
+          "BCnEncoder.Net": "[2.3.0, )",
           "BouncyCastle.Cryptography": "[2.7.0, )"
         }
       }

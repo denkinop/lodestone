@@ -61,6 +61,8 @@ public sealed class LobbyTests
         Assert.Equal(5, character.Appearance.EyeShape);
         Assert.Equal(28, character.ClassJobId);
         Assert.Equal(91, character.Level);
+        Assert.Equal(new CharacterBirthday(12, 32), character.Birthday);
+        Assert.Equal(8, character.GuardianDeityId);
         Assert.Equal(new CharacterEquipment("off_hand", 100, 200, 3, 4, 5),
             Assert.Single(character.Equipment, value => value.Slot == "off_hand"));
         Assert.Equal(new CharacterEquipment("head", 10, 0, 3, 4, 5),
@@ -136,6 +138,20 @@ public sealed class LobbyTests
         Assert.Null(character.DetailError);
     }
 
+    [Theory]
+    [InlineData(0, 1, 8, false, true)]
+    [InlineData(12, 33, 8, false, true)]
+    [InlineData(1, 1, 0, true, false)]
+    public void MissingProfileFieldsDoNotDiscardAppearance(int month, int day, int deity, bool hasBirthday, bool hasDeity)
+    {
+        var (_, characters) = LobbyRecords.Characters(Page(true, Character(101, 0, month: month, day: day, deity: deity)));
+        var character = Assert.Single(characters);
+        Assert.Equal(hasBirthday, character.Birthday is not null);
+        Assert.Equal(hasDeity, character.GuardianDeityId.HasValue);
+        Assert.NotNull(character.Appearance);
+        Assert.Null(character.DetailError);
+    }
+
     private static void VerifyOutput(byte[] output, LobbyCipher cipher)
     {
         var setupLength = (int)U32(output, 24);
@@ -171,7 +187,7 @@ public sealed class LobbyTests
         return accounts;
     }
 
-    private static byte[] Character(ulong id, byte slot, string level = "91")
+    private static byte[] Character(ulong id, byte slot, string level = "91", int month = 12, int day = 32, int deity = 8)
     {
         var row = new byte[1184];
         Put(row, 0, 22UL);
@@ -193,6 +209,9 @@ public sealed class LobbyTests
         levels[18] = level;
         levels[28] = 55;
         content[2] = levels;
+        content[6] = month.ToString(CultureInfo.InvariantCulture);
+        content[7] = day;
+        content[8] = deity.ToString(CultureInfo.InvariantCulture);
         content[13] = appearance;
         content[14] = weapon;
         content[15] = weapon;

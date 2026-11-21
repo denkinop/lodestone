@@ -1,31 +1,49 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
-import { preparePreview } from './bridge'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { prepareGamePreview, preparePreview, releaseGamePreview, saveGamePortrait, type GameGear } from './bridge'
 import { asset, portrait, type Character } from './demo'
-import { jobIcon, jobName } from './jobs'
+import { jobIcon, jobName, lobbyJobIcon, lobbyJobName } from './jobs'
 import { portraitPng } from './portrait-export'
 import UiIcon from './UiIcon.vue'
 
 const props = defineProps<{ character: Character }>()
-const view = ref<'full' | 'portrait'>('full')
+const emit = defineEmits<{ resources: [iconRoot: string] }>()
+type View = 'full' | 'portrait'
+type Viewer = import('./renderer/viewer.js').Viewer
+type Resources = { scene: string; textureRoot: string }
+const view = ref<View>('full')
 const canvas = ref<HTMLCanvasElement>()
+const offscreen = ref<HTMLCanvasElement>()
 const live = ref(false)
 const busy = ref(false)
+const capturing = ref(false)
 const exporting = ref(false)
 const message = ref('')
-const aetherBackground = asset('export-background.png')
+const loadedSlots = ref<string[]>([])
+const hideHelmet = ref(true)
+const aetherBackground = computed(() => asset(props.character.game ? 'export-background.jpg' : 'export-background.png'))
+const portraits = ref<Partial<Record<View, string>>>({})
+const staticPortrait = computed(() => props.character.game
+  ? portraits.value[view.value] : portrait(props.character.id, view.value))
 const currentJob = computed(() => {
-  const progress = props.character.jobProgress
-  if (!progress?.current) return null
-  const id = progress.current
-  return { id, level: progress.levels[id], demo: progress.source === 'demo' }
+  const { game, jobProgress } = props.character
+  if (jobProgress?.current) {
+    const id = jobProgress.current
+    return { name: jobName(id), level: jobProgress.levels[id] ?? game?.level, demo: jobProgress.source === 'demo', icon: jobIcon(id) }
+  }
+  if (game) return { name: lobbyJobName(game.jobId), level: game.level, demo: false, icon: lobbyJobIcon(game.jobId) }
+  return null
 })
-let viewer: import('./renderer/viewer.js').Viewer | undefined
+let viewer: Viewer | undefined
 let request: AbortController | undefined
+let nativeRequest: string | undefined
+let prepared: ReturnType<typeof prepareGamePreview> | undefined
+const lifetime = new AbortController()
 
-function setView(mode: 'full' | 'portrait') {
+function setView(mode: View) {
   view.value = mode
   viewer?.setMode(mode)
+  viewer?.setHidden('head', hideHelmet.value || mode === 'portrait')
 }
 
 async function imageFrom(url: string) {
@@ -33,6 +51,69 @@ async function imageFrom(url: string) {
   image.src = url
   await image.decode()
   return image
+}
+
+async function loadScene(resources: Resources, signal: AbortSignal) {
+  const response = await fetch(resources.scene, { signal })
+  if (!response.ok) throw new Error('无法加载预览模型')
+  return await response.json()
+}
+
+function loadViewer(viewer: Viewer, scene: Awaited<ReturnType<typeof loadScene>>, resources: Resources, signal: AbortSignal) {
+  return viewer.load(scene, signal, (id: string) => resources.textureRoot + encodeURIComponent(id) + '.png')
+}
+
+function prepareGame() {
+  if (prepared) return prepared
+  const id = crypto.randomUUID()
+  nativeRequest = id
+  prepared = prepareGamePreview(String(props.character.id), id).catch(error => {
+    if (nativeRequest === id) {
+      nativeRequest = undefined
+      prepared = undefined
+    }
+    throw error
+  })
+  return prepared
+}
+
+async function renderPortraits() {
+  const game = props.character.game
+  if (!game?.appearance) return
+  const signal = lifetime.signal
+  capturing.value = true
+  message.value = ''
+  let captureViewer: Viewer | undefined
+  try {
+    const resources = await prepareGame()
+    if (signal.aborted) return
+    for (const mode of ['full', 'portrait'] as const)
+      if (resources[mode]) portraits.value[mode] = game.portraitRoot + mode + '.png'
+    const scene = await loadScene(resources, signal)
+    if (signal.aborted) return
+    loadedSlots.value = scene.gear.filter((item: GameGear) => item.loaded).map((item: GameGear) => item.slot)
+    emit('resources', resources.iconRoot)
+    if (resources.full && resources.portrait) return
+    const runtime = await import('./renderer/viewer.js')
+    if (signal.aborted || !offscreen.value || !nativeRequest) return
+    captureViewer = new runtime.Viewer(offscreen.value)
+    captureViewer.setHidden('head', true)
+    await loadViewer(captureViewer, scene, resources, signal)
+    for (const mode of ['full', 'portrait'] as const) {
+      if (signal.aborted) return
+      if (resources[mode]) continue
+      captureViewer.setMode(mode)
+      captureViewer.render()
+      const png = captureViewer.canvas.toDataURL('image/png')
+      const saved = await saveGamePortrait(nativeRequest, mode, png).catch(() => false)
+      if (!signal.aborted) portraits.value[mode] = saved ? game.portraitRoot + mode + '.png' : png
+    }
+  } catch (error) {
+    if (!signal.aborted) message.value = error instanceof Error ? error.message : '无法生成角色图片'
+  } finally {
+    captureViewer?.dispose()
+    capturing.value = false
+  }
 }
 
 function stopLive() {
@@ -49,6 +130,9 @@ async function toggleLive() {
     stopLive()
     return
   }
+  if (capturing.value) return
+  if (props.character.game && !portraits.value.full) await renderPortraits()
+  if (lifetime.signal.aborted) return
   message.value = ''
   live.value = true
   busy.value = true
@@ -56,22 +140,18 @@ async function toggleLive() {
   request = controller
   try {
     await nextTick()
+    if (controller.signal.aborted) return
     const [runtime, resources] = await Promise.all([
       import('./renderer/viewer.js'),
-      preparePreview(props.character.id),
+      props.character.game ? prepareGame() : preparePreview(Number(props.character.id)),
     ])
-    if (controller.signal.aborted) return
-    const response = await fetch(resources.scene, { signal: controller.signal })
-    if (!response.ok) {
-      const failure = await response.json().catch(() => null)
-      throw new Error(failure?.error || '无法加载预览模型')
-    }
-    const scene = await response.json()
+    const scene = await loadScene(resources, controller.signal)
     if (controller.signal.aborted || !canvas.value) return
     viewer = new runtime.Viewer(canvas.value)
     viewer.setMode(view.value)
-    viewer.setHidden('head', true)
-    const missing = await viewer.load(scene, controller.signal, (id: string) => resources.textureRoot + encodeURIComponent(id) + '.png')
+    viewer.setHidden('head', hideHelmet.value || view.value === 'portrait')
+    viewer.setHidden('weapons', false)
+    const missing = await loadViewer(viewer, scene, resources, controller.signal)
     if (!controller.signal.aborted && missing) message.value = '有 ' + missing + ' 张贴图未能加载'
   } catch (error) {
     if (controller.signal.aborted) return
@@ -92,11 +172,10 @@ async function save() {
   try {
     const activeViewer = viewer
     const mode = view.value
-    const [figure, backdrop] = await Promise.all([
-      activeViewer?.canvas ?? imageFrom(portrait(props.character.id, mode)),
-      imageFrom(aetherBackground),
-    ])
-    if (activeViewer !== viewer || mode !== view.value) return
+    const figureSource = activeViewer?.canvas ?? (staticPortrait.value ? imageFrom(staticPortrait.value) : undefined)
+    if (!figureSource) return
+    const [figure, backdrop] = await Promise.all([figureSource, imageFrom(aetherBackground.value)])
+    if (activeViewer !== viewer || mode !== view.value || lifetime.signal.aborted) return
     activeViewer?.render()
     const link = document.createElement('a')
     link.download = [props.character.name, props.character.world, mode === 'full' ? '全身' : '面部'].join('-') + '.png'
@@ -109,7 +188,12 @@ async function save() {
   }
 }
 
-onBeforeUnmount(stopLive)
+onMounted(renderPortraits)
+onBeforeUnmount(() => {
+  lifetime.abort()
+  stopLive()
+  if (nativeRequest) void releaseGamePreview(nativeRequest).catch(() => {})
+})
 </script>
 
 <template>
@@ -117,9 +201,12 @@ onBeforeUnmount(stopLive)
     <div class="hero-heading">
       <p><UiIcon name="location" :size="15" />{{ character.dc }} <span>/</span> {{ character.world }}</p>
       <h1>{{ character.name }}</h1>
-      <div v-if="currentJob" class="hero-job">
-        <img :src="jobIcon(currentJob.id)" alt="" width="23" height="23">
-        <span>{{ jobName(currentJob.id) }}</span>
+    </div>
+    <div class="hero-loadout">
+      <slot name="main-hand" />
+      <div v-if="currentJob?.name" class="hero-job">
+        <img v-if="currentJob.icon" :src="currentJob.icon" alt="" width="23" height="23">
+        <span>{{ currentJob.name }}</span>
         <strong v-if="currentJob.level">Lv. {{ currentJob.level }}</strong>
         <small v-if="currentJob.demo">示例</small>
       </div>
@@ -129,7 +216,7 @@ onBeforeUnmount(stopLive)
       <div class="hero-frame" :class="{ 'hero-still': !live || busy }">
         <img v-if="!live || busy" class="hero-aether" :src="aetherBackground" :class="{ 'aether-closeup': view === 'portrait' }" alt="">
         <div class="hero-art" :class="{ 'view-portrait': view === 'portrait', 'is-live': live && !busy }">
-          <img v-show="!live || busy" class="hero-character" :src="portrait(character.id, view)" :alt="character.name + '的角色预览'">
+          <img v-if="staticPortrait && (!live || busy)" class="hero-character" :src="staticPortrait" :alt="character.name + '的角色预览'">
           <div v-if="live" class="live-viewport">
             <canvas ref="canvas" v-show="!busy" tabindex="0" aria-label="三维角色预览，可拖动或用方向键旋转"></canvas>
           </div>
@@ -137,7 +224,9 @@ onBeforeUnmount(stopLive)
         <button v-if="live && !busy" type="button" class="hero-reset" title="还原视角" aria-label="还原视角" @click="viewer?.reset()">
           <UiIcon name="focus" :size="18" />
         </button>
-        <p v-if="message" class="hero-message" role="status">{{ message }}</p>
+        <p v-if="message || (capturing && !staticPortrait) || (character.game && !character.game.appearance)" class="hero-message" role="status">
+          {{ message || (capturing ? '正在准备角色图片…' : character.game?.detailError || '暂无角色外观') }}
+        </p>
       </div>
       <slot name="accessories" />
     </div>
@@ -147,14 +236,27 @@ onBeforeUnmount(stopLive)
         <button type="button" :aria-pressed="view === 'portrait'" @click="setView('portrait')">面部</button>
       </div>
       <div class="hero-actions">
-        <button type="button" class="hero-button hero-live" :aria-pressed="live" @click="toggleLive">
+        <button type="button" class="hero-button hero-live" :aria-pressed="live"
+          :disabled="capturing || (character.game && !character.game.appearance)" @click="toggleLive">
           <UiIcon name="cube" :size="17" />
-          <span>{{ busy ? '加载中' : live ? '退出 3D' : '3D 预览' }}</span>
+          <span>{{ busy ? (character.game ? '取消加载' : '加载中') : live ? '退出 3D' : '3D 预览' }}</span>
         </button>
-        <button type="button" class="hero-button hero-export" aria-label="导出 PNG" :disabled="busy || exporting" @click="save">
+        <button type="button" class="hero-button hero-export" aria-label="导出 PNG"
+          :disabled="busy || exporting || (!live && !staticPortrait)" @click="save">
           <UiIcon name="download" :size="18" /><span>导出 PNG</span>
         </button>
       </div>
     </div>
+    <div v-if="character.game && live && !busy && loadedSlots.includes('head')">
+      <button class="hero-button" type="button"
+        :disabled="view === 'portrait'" :aria-pressed="!hideHelmet && view !== 'portrait'"
+        @click="hideHelmet = !hideHelmet; viewer?.setHidden('head', hideHelmet)">显示头部装备</button>
+    </div>
+    <div v-if="character.game && capturing" class="portrait-capture" aria-hidden="true"><canvas ref="offscreen"></canvas></div>
   </section>
 </template>
+
+<style scoped>
+.portrait-capture { position: fixed; left: -10000px; top: 0; width: 440px; height: 600px; visibility: hidden; }
+.portrait-capture canvas { display: block; width: 100%; height: 100%; }
+</style>

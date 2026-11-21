@@ -14,7 +14,7 @@ public sealed class GameArea
     internal int Order { get; }
 }
 
-public sealed partial class GameAreaDirectory : IDisposable
+public sealed partial class GameAreaDirectory(string? cacheFile = null) : IDisposable
 {
     private static readonly Uri DirectoryUri = new("https://ff.dorado.sdo.com/ff/area/serverlist_new.js");
     private readonly HttpClient http = new(new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false })
@@ -22,12 +22,32 @@ public sealed partial class GameAreaDirectory : IDisposable
         Timeout = TimeSpan.FromSeconds(15)
     };
 
-    public async Task<IReadOnlyList<GameArea>> GetAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<GameArea>> GetAsync(CancellationToken cancellationToken = default, bool refresh = false)
     {
+        if (!refresh && cacheFile is not null)
+        {
+            try
+            {
+                if (new FileInfo(cacheFile) is { Exists: true, Length: <= 65536 })
+                    return Parse(await File.ReadAllTextAsync(cacheFile, cancellationToken));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or FormatException
+                or KeyNotFoundException or InvalidOperationException) { }
+        }
         try
         {
             var script = await http.GetStringAsync(DirectoryUri, cancellationToken);
-            return Parse(script);
+            var areas = Parse(script);
+            if (cacheFile is not null)
+            {
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(cacheFile)!);
+                    await File.WriteAllTextAsync(cacheFile, script, cancellationToken);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+            return areas;
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or FormatException or KeyNotFoundException
             or InvalidOperationException || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)

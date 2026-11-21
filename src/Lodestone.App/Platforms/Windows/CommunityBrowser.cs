@@ -15,7 +15,6 @@ internal sealed class CommunityBrowser
     private WebView2? webView;
     private RisingStonesSession? session;
     private IReadOnlyList<CommunityLoginCookie> federatedCookies = [];
-    private bool needsInteractiveRetry;
     private int generation;
     private Uri? jobReadUri;
     private Uri? allowedRoleChange;
@@ -28,13 +27,6 @@ internal sealed class CommunityBrowser
         federatedCookies = cookies;
     }
 
-    internal Task<bool> OpenAsync()
-    {
-        if (needsInteractiveRetry)
-            Close();
-        return OpenAsync(RisingStonesSession.Entry, interactive: true, ticketOnlyProfile: false);
-    }
-
     internal async Task ResumeAsync(Uri? callback, int? code)
     {
         if (session is not { } current || window is not null)
@@ -44,12 +36,12 @@ internal sealed class CommunityBrowser
             current.RequireConfirmation(code);
             return;
         }
-        if (!await OpenAsync(callback ?? RisingStonesSession.Entry, interactive: false, ticketOnlyProfile: callback is not null)
+        if (!await OpenAsync(callback ?? RisingStonesSession.Entry, ticketOnlyProfile: callback is not null)
             && ReferenceEquals(session, current) && window is null)
             current.RequireConfirmation(code);
     }
 
-    internal async Task<bool> ReadJobsAsync()
+    private async Task<bool> ReadJobsAsync()
     {
         if (webView?.CoreWebView2 is not { } core || session is not { } current || !InPortal(core) || !current.BeginJobRead())
             return false;
@@ -108,7 +100,7 @@ internal sealed class CommunityBrowser
             if (!CanContinue())
                 return "石之家会话已变化，请重新读取角色档案。";
             if (changeReply is null || !current.ObserveRoleChange(changeReply, target))
-                return "未能确认石之家角色切换，请在官方窗口查看绑定状态。";
+                return "未能确认石之家角色切换。";
 
             await ReadJobsAsync();
             return null;
@@ -123,19 +115,12 @@ internal sealed class CommunityBrowser
         }
     }
 
-    private async Task<bool> OpenAsync(Uri entry, bool interactive, bool ticketOnlyProfile)
+    private async Task<bool> OpenAsync(Uri entry, bool ticketOnlyProfile)
     {
         if (session is not { } current)
             return false;
         if (window is not null)
-        {
-            if (interactive)
-            {
-                window.AppWindow.Show();
-                window.Activate();
-            }
             return true;
-        }
         var revision = ++generation;
         var browser = new WebView2();
         var shell = new WinWindow { Title = "石之家 · 盛趣官方登录", Content = browser };
@@ -162,11 +147,8 @@ internal sealed class CommunityBrowser
             current.Closed();
         };
         shell.Activate();
-        if (!interactive)
-        {
-            shell.AppWindow.Hide();
-            _ = WaitForSessionAsync(revision, current);
-        }
+        shell.AppWindow.Hide();
+        _ = WaitForSessionAsync(revision, current);
 
         try
         {
@@ -207,10 +189,7 @@ internal sealed class CommunityBrowser
             {
                 args.Cancel = !Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri) || !AllowsPage(uri);
                 if (args.Cancel && ticketOnlyProfile && uri is not null && RisingStonesSession.IsPassportPage(uri))
-                {
-                    needsInteractiveRetry = true;
                     current.RequireConfirmation();
-                }
             };
             if (ticketOnlyProfile)
             {
@@ -289,11 +268,7 @@ internal sealed class CommunityBrowser
         catch (Exception ex) when (ex is COMException or IOException or InvalidOperationException or ArgumentException)
         {
             if (generation == revision)
-            {
                 Close();
-                if (interactive)
-                    current.Failed();
-            }
             return false;
         }
     }
@@ -380,7 +355,6 @@ internal sealed class CommunityBrowser
         var browser = webView;
         window = null;
         webView = null;
-        needsInteractiveRetry = false;
         jobReadUri = null;
         allowedRoleChange = null;
         selectingRole = false;

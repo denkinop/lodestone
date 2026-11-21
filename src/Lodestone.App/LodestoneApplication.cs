@@ -10,6 +10,7 @@ public sealed class LodestoneApplication : Application
         var commands = new ClientCommands();
         view.SetInvokeJavaScriptTarget(commands);
         view.WebResourceRequested += PreviewResources.Respond;
+        view.WebResourceRequested += commands.GetGamePreviewResource;
         view.WebResourceRequested += commands.GetLoginResource;
         view.HandlerChanged += OnHandlerChanged;
 
@@ -37,7 +38,14 @@ public sealed class LodestoneApplication : Application
         platform.CoreWebView2Initialized += (_, _) =>
         {
             if (platform.CoreWebView2 is { } core)
-                core.NewWindowRequested += (_, request) => request.Handled = true;
+                core.NewWindowRequested += async (_, request) =>
+                {
+                    request.Handled = true;
+                    if (request.IsUserInitiated && Uri.TryCreate(request.Uri, UriKind.Absolute, out var uri)
+                        && uri.Scheme == Uri.UriSchemeHttps && uri.Host == "ff14.huijiwiki.com" && uri.IsDefaultPort
+                        && uri.AbsolutePath.StartsWith("/wiki/", StringComparison.Ordinal))
+                        await Launcher.Default.TryOpenAsync(uri);
+                };
         };
     }
 }

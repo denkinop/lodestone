@@ -273,6 +273,7 @@ export class Viewer {
         this.requestFrame();
     }
 
+    /** @param {string} mode @param {string | null} slot */
     setMode(mode, slot = null) {
         this.mode = mode;
         this.slot = slot;

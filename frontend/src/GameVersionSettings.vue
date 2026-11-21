@@ -21,7 +21,7 @@ onMounted(async () => {
   try {
     lobby.value = await getLobbyVersion()
   } catch {
-    lobbyStatus.value = '无法读取 Lobby Version'
+    lobbyStatus.value = '无法读取大厅服务器版本'
   }
 })
 
@@ -34,9 +34,9 @@ async function save() {
       lobbyStatus.value = '请输入 0 至 65535 的整数'
       return
     }
-    lobbyStatus.value = 'Lobby Version 已保存'
+    lobbyStatus.value = '大厅服务器版本已保存'
   } catch {
-    lobbyStatus.value = '无法保存 Lobby Version'
+    lobbyStatus.value = '无法保存大厅服务器版本'
   } finally {
     saving.value = false
   }
@@ -106,7 +106,7 @@ onBeforeUnmount(() => {
       <span class="section-icon"><UiIcon name="settings" :size="18" /></span><h2 id="version-title">游戏版本</h2>
     </div>
     <form class="version-row" @submit.prevent="save">
-      <label for="lobby-version">Lobby Version</label>
+      <label for="lobby-version">大厅服务器版本</label>
       <input id="lobby-version" v-model.number="lobby" type="number" min="0" max="65535" step="1" required>
       <button class="secondary" type="submit" :disabled="saving">保存</button>
       <span v-if="lobbyStatus" role="status">{{ lobbyStatus }}</span>

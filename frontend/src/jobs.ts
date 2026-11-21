@@ -41,6 +41,11 @@ export function lobbyJobName(id: number | null) {
   return job ? names.get(job as JobId) ?? job : null
 }
 
+export function lobbyJobIcon(id: number | null) {
+  const job = id === null ? null : lobbyJobs[id]
+  return job && names.has(job as JobId) ? jobIcon(job as JobId) : undefined
+}
+
 export function communityJobProgress(levels: Record<string, number>, classJobId: number | null): JobProgress | undefined {
   const results: JobProgress['levels'] = {}
   for (const [id, name] of names) {

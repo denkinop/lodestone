@@ -11,6 +11,7 @@ internal sealed class ClientCommands : IDisposable
     private readonly OfficialCdnClient cdn = new();
     private readonly GameVersionService versions;
     private readonly GameCommands game;
+    private readonly GamePreview preview;
     private readonly CommunityBrowser browser = new();
     private RisingStonesSession? community;
     private GameAuthorization? communityOwner;
@@ -22,6 +23,7 @@ internal sealed class ClientCommands : IDisposable
     {
         versions = new GameVersionService(cdn, Path.Combine(FileSystem.AppDataDirectory, "cdn"));
         game = new GameCommands(versions, GetLobbyVersion);
+        preview = new GamePreview(cdn, game.FindPreviewCharacter);
         game.SessionChanged += OnGameSessionChanged;
     }
 
@@ -29,21 +31,29 @@ internal sealed class ClientCommands : IDisposable
     public Task<int?> GetSavedGameArea() => game.GetSavedAreaAsync();
     public Task<GameResponse> BeginGameLogin(string id, string mode, string account, int areaId, bool remember) =>
         game.LoginAsync(id, mode, account, areaId, remember);
-    public Task<GameResponse> SelectServiceAccount(string id, int index) => game.SelectAsync(id, index);
+    public Task<GameResponse> SelectServiceAccount(string id, int index) => game.SelectAsync(id, index, refresh: false);
+    public async Task<GameResponse> RefreshLobby(string id, int index)
+    {
+        var result = await game.SelectAsync(id, index, refresh: true);
+        if (result.Error is null)
+            preview.RefreshSource();
+        return result;
+    }
+    public GameResponse ChooseGameCharacter(string id)
+    {
+        preview.Invalidate();
+        return game.ChooseCharacter(id);
+    }
     public GameProgress? GetGameProgress(string id) => game.GetProgress(id);
     public bool CancelGameOperation(string id) => game.Cancel(id);
     public Task<bool> SignOutGame() => game.SignOutAsync();
     public CommunityStatus? GetCommunityStatus()
     {
         var snapshot = Volatile.Read(ref community)?.Snapshot;
-        return snapshot is null ? null : new CommunityStatus(snapshot.State, snapshot.Detail,
-            snapshot.Bindings.Select(binding => new BoundCharacter(binding.Character, binding.World)).ToArray(),
-            snapshot.JobsStatus, snapshot.JobProfile is { } profile
+        return snapshot is null ? null : new CommunityStatus(snapshot.State, snapshot.JobProfile is { } profile
                 ? new CommunityJobStatus(profile.Character, profile.Area, profile.World, profile.Levels) : null);
     }
 
-    public Task<bool> OpenCommunity() => MainThread.InvokeOnMainThreadAsync(browser.OpenAsync);
-    public Task<bool> ReadCommunityJobs() => MainThread.InvokeOnMainThreadAsync(browser.ReadJobsAsync);
     public Task<string?> SelectCommunityCharacter(string contentId) => MainThread.InvokeOnMainThreadAsync(async () =>
     {
         if (game.FindCommunityCharacter(contentId) is not { } selection || !ReferenceEquals(selection.Authorization, communityOwner))
@@ -51,7 +61,13 @@ internal sealed class ClientCommands : IDisposable
         return await browser.SelectRoleAsync(selection.Character, () => game.FindCommunityCharacter(contentId) == selection);
     });
 
-    private void OnGameSessionChanged() => MainThread.BeginInvokeOnMainThread(() =>
+    private void OnGameSessionChanged()
+    {
+        preview.Invalidate();
+        MainThread.BeginInvokeOnMainThread(UpdateCommunitySession);
+    }
+
+    private void UpdateCommunitySession()
     {
         var (owner, exchange) = game.CurrentAuthorization;
         if (ReferenceEquals(owner, communityOwner))
@@ -62,7 +78,7 @@ internal sealed class ClientCommands : IDisposable
         browser.SetSession(session, owner?.CommunityCookies ?? []);
         if (owner is not null && session is not null && exchange is not null)
             _ = ResumeCommunityAsync(owner, session, exchange);
-    });
+    }
 
     private async Task ResumeCommunityAsync(
         GameAuthorization owner, RisingStonesSession session, Task<CommunityTicketResult> exchange)
@@ -93,6 +109,11 @@ internal sealed class ClientCommands : IDisposable
     public PreviewLocation? PreparePreview(int characterId) => characterId == 1
         ? new PreviewLocation(PreviewResources.Root + "scene.json", PreviewResources.Root + "textures/")
         : null;
+
+    public Task<GamePreviewResult> PrepareGamePreview(string characterId, string requestId) => preview.PrepareAsync(characterId, requestId);
+    public bool ReleaseGamePreview(string requestId) => preview.Release(requestId);
+    public bool SaveGamePortrait(string requestId, string mode, string png) => preview.SavePortrait(requestId, mode, png);
+    internal void GetGamePreviewResource(object? sender, WebViewWebResourceRequestedEventArgs request) => preview.Respond(sender, request);
 
     public int GetLobbyVersion() => Preferences.Default.Get(LobbyVersionSetting, 7500);
 
@@ -180,6 +201,7 @@ internal sealed class ClientCommands : IDisposable
             active?.Cancellation.Cancel();
         }
         game.SessionChanged -= OnGameSessionChanged;
+        preview.Dispose();
         game.Dispose();
         Volatile.Write(ref community, null);
         MainThread.BeginInvokeOnMainThread(() => browser.SetSession(null, []));
@@ -209,9 +231,6 @@ internal sealed record VersionProgress(
 
 internal sealed record CommunityStatus(
     [property: JsonPropertyName("state")] string State,
-    [property: JsonPropertyName("detail")] string Detail,
-    [property: JsonPropertyName("bindings")] BoundCharacter[] Bindings,
-    [property: JsonPropertyName("jobsStatus")] string JobsStatus,
     [property: JsonPropertyName("jobProfile")] CommunityJobStatus? JobProfile);
 
 internal sealed record CommunityJobStatus(
@@ -219,7 +238,3 @@ internal sealed record CommunityJobStatus(
     [property: JsonPropertyName("area")] string Area,
     [property: JsonPropertyName("world")] string World,
     [property: JsonPropertyName("levels")] IReadOnlyDictionary<string, int> Levels);
-
-internal sealed record BoundCharacter(
-    [property: JsonPropertyName("character")] string Character,
-    [property: JsonPropertyName("world")] string World);

@@ -2,7 +2,7 @@
 import { icon, type Equipment } from './demo'
 import UiIcon from './UiIcon.vue'
 
-defineProps<{ label: string; items: Equipment[]; selected: Equipment | null }>()
+defineProps<{ label: string; items: Equipment[]; selected: Equipment | null; iconRoot?: string }>()
 const emit = defineEmits<{
   reveal: [entry: Equipment, target: HTMLElement, pinned: boolean]
   dismiss: []
@@ -25,7 +25,6 @@ function entryLabel(entry: Equipment) {
 
 <template>
   <div class="gear-rail" role="group" :aria-label="label">
-    <div class="gear-rail-label" aria-hidden="true">{{ label }}</div>
     <button v-for="entry in items" :key="entry.slot" class="gear-card" type="button"
       :disabled="!entry.model" :aria-label="entryLabel(entry)" :data-slot="entry.slot"
       :aria-expanded="selected === entry" aria-controls="item-detail"
@@ -33,7 +32,7 @@ function entryLabel(entry: Equipment) {
       @focus="reveal($event, entry, false)" @blur="emit('dismiss')"
       @click="reveal($event, entry, true)">
       <span class="gear-image">
-        <img v-if="icon(entry.candidates[0])" :src="icon(entry.candidates[0])" alt="" width="36" height="36">
+        <img v-if="icon(entry.candidates[0], iconRoot)" :src="icon(entry.candidates[0], iconRoot)" alt="" width="36" height="36">
         <UiIcon v-else name="shirt" :size="17" />
       </span>
     </button>

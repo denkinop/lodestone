@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Serialization;
+using Lodestone.Core.Assets;
 using Lodestone.Core.Auth;
 using Lodestone.Core.Cdn;
 using Lodestone.Core.Community;
@@ -11,9 +12,10 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
 {
     private const string InstallationKey = "sdo-installation";
     private static readonly string[] RaceNames = ["", "人族", "精灵族", "拉拉菲尔族", "猫魅族", "鲁加族", "敖龙族", "硌狮族", "维埃拉族"];
-    private readonly GameAreaDirectory directory = new();
+    private readonly GameAreaDirectory directory = new(Path.Combine(FileSystem.AppDataDirectory, "game-areas.js"));
     private readonly GameLobbyClient lobby = new();
     private readonly SavedGameLoginStore savedLogins = new();
+    private readonly CharacterCache cache = new(FileSystem.AppDataDirectory);
     private readonly object gate = new();
     private Dictionary<int, GameArea> areas = [];
     private LoginOperation? operation;
@@ -90,13 +92,14 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                     ? await auth.ConfirmByPhoneAsync(account, PublishChallenge, token, remember)
                     : await auth.ConfirmByScanAsync(PublishChallenge, token, remember);
             }
-            lock (gate)
+            var directoryPath = cache.AccountPath(authorization.AccountId, areaId);
+            var catalog = CharacterCache.Read(directoryPath);
+            var firstRead = catalog is null;
+            if (catalog is null)
             {
-                current.Challenge = null;
-                current.Status = "正在检查游戏版本并连接 Lobby";
+                var result = await ReadLobbyAsync(current, area, authorization, null);
+                catalog = new CachedCatalog([], [], null, null).WithRoster(result);
             }
-            var version = await versions.RefreshAsync(cancellationToken: token);
-            var result = await lobby.ReadAsync(area, authorization, version.VersionInfo, (ushort)lobbyVersion(), null, token);
             token.ThrowIfCancellationRequested();
             string? notice = null;
             if (!restoring)
@@ -108,14 +111,19 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             }
             if (notice is null && (remember || restoring) && !credentialStored)
                 notice = "已登录，本次未能保存登录状态";
+            GameResponse response;
             lock (gate)
             {
                 token.ThrowIfCancellationRequested();
-                session = new GameSession(authorization, area, version.VersionInfo, new CommunityAttempt(auth, authorization), result);
+                if (firstRead)
+                    CharacterCache.Save(directoryPath, catalog);
+                var next = new GameSession(authorization, area, directoryPath, new CommunityAttempt(auth, authorization), catalog);
+                session = next;
+                response = Present(next);
                 auth = null;
             }
             SessionChanged?.Invoke();
-            return Present(result, area) with { Notice = notice };
+            return response with { Notice = notice };
         }
         catch (OperationCanceledException)
         {
@@ -148,9 +156,21 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             return current.SignedOut ? Task.FromResult(false) : savedLogins.SaveAsync(installation, areaId, login, token);
     }
 
-    internal async Task<GameResponse> SelectAsync(string requestId, int index)
+    private async Task<LobbyRoster> ReadLobbyAsync(LoginOperation current, GameArea area, GameAuthorization authorization, int? index)
     {
-        if (!Guid.TryParseExact(requestId, "D", out var id) || index is < 0 or > 7)
+        lock (gate)
+        {
+            current.Challenge = null;
+            current.Status = "正在检查游戏版本并连接 Lobby";
+        }
+        var token = current.Cancellation.Token;
+        var version = await versions.RefreshAsync(cancellationToken: token);
+        return await lobby.ReadAsync(area, authorization, version.VersionInfo, (ushort)lobbyVersion(), index, token);
+    }
+
+    internal async Task<GameResponse> SelectAsync(string requestId, int index, bool refresh)
+    {
+        if (!Guid.TryParseExact(requestId, "D", out var id) || index is < -1 or > 7)
             return Failed("服务账号选择无效");
         LoginOperation current;
         GameSession authorized;
@@ -159,34 +179,82 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             if (disposed || operation is not null || session is null)
                 return Failed("游戏会话不可用，请重新登录");
             authorized = session;
+            if (!refresh)
+            {
+                if (!authorized.Catalog.Accounts.Any(account => account.Index == index))
+                    return Failed("所选服务账号不可用");
+                authorized.ViewIndex = index;
+                return Present(authorized);
+            }
             current = operation = new LoginOperation(id, "正在读取角色列表");
         }
         try
         {
-            var result = await lobby.ReadAsync(authorized.Area, authorized.Authorization, authorized.VersionInfo,
-                (ushort)lobbyVersion(), index, current.Cancellation.Token);
+            var entries = await directory.GetAsync(current.Cancellation.Token, refresh: true);
+            var area = entries.FirstOrDefault(entry => entry.Id == authorized.Area.Id) ?? authorized.Area;
+            var result = await ReadLobbyAsync(current, area, authorized.Authorization, index == -1 ? null : index);
+            var catalog = authorized.Catalog.WithRoster(result);
             lock (gate)
             {
                 current.Cancellation.Token.ThrowIfCancellationRequested();
-                authorized.Roster = result;
+                CharacterCache.Save(authorized.Directory, catalog);
+                areas = entries.ToDictionary(entry => entry.Id);
+                authorized.Area = area;
+                authorized.Catalog = catalog;
+                authorized.ViewIndex = catalog.ViewIndex;
+                return Present(authorized);
             }
-            return Present(result, authorized.Area);
         }
         catch (OperationCanceledException) { return Failed("已取消角色查询"); }
         catch (LobbyException ex) { return Failed(ex.Message); }
+        catch (OfficialCdnException ex) { return Failed(ex.Message); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { return Failed("无法写入角色缓存，已保留上次数据"); }
         finally { Finish(current); }
+    }
+
+    internal GameResponse ChooseCharacter(string id)
+    {
+        lock (gate)
+        {
+            if (session is not { ViewIndex: { } index } active || operation is not null
+                || !active.Catalog.Rosters.TryGetValue(index, out var roster) || !roster.Characters.Any(character => character.ContentId == id))
+                return Failed("所选角色不可用");
+            var catalog = active.Catalog with { Choice = new(index, id), ViewIndex = index };
+            try { CharacterCache.Save(active.Directory, catalog); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return Failed("无法保存当前角色"); }
+            active.Catalog = catalog;
+            return Present(active);
+        }
     }
 
     internal (GameAuthorization Authorization, CommunityCharacter Character)? FindCommunityCharacter(string contentId)
     {
         lock (gate)
         {
-            if (session is not { } active || operation is not null)
+            if (session is not { } active || active.Catalog.Choice?.Id != contentId)
                 return null;
-            var character = active.Roster.Characters.FirstOrDefault(entry => entry.ContentId == contentId);
-            return character is not null && character.HomeWorld.Name.Length > 0
-                ? (active.Authorization, new CommunityCharacter(character.Name, active.Area.Name, character.HomeWorld.Name)) : null;
+            var character = Preview(active, contentId)?.Character;
+            var world = character is null ? null : KnownWorld(character.HomeWorld);
+            return character is not null && world is not null
+                ? (active.Authorization, new CommunityCharacter(character.Name, active.Area.Name, world)) : null;
         }
+    }
+
+    internal PreviewCharacter? FindPreviewCharacter(string contentId)
+    {
+        lock (gate)
+            return session is { } active ? Preview(active, contentId) : null;
+    }
+
+    private static PreviewCharacter? Preview(GameSession active, string id)
+    {
+        if (!ulong.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out _))
+            return null;
+        foreach (var entry in active.Catalog.Rosters)
+            if (entry.Value.Characters.FirstOrDefault(character => character.ContentId == id) is { } character)
+                return new(character, active.Id, entry.Value.Revision, Path.Combine(active.Directory, id));
+        return null;
     }
 
     internal GameProgress? GetProgress(string requestId)
@@ -269,22 +337,36 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
 
     private static GameResponse Failed(string reason) => new([], null, [], reason);
 
-    private static GameResponse Present(LobbyRoster roster, GameArea area) => new(
-        roster.Accounts.Select(account => new GameAccount(account.Index, account.Name)).ToArray(),
-        roster.SelectedIndex,
-        roster.Characters.Select(character => new GameCharacter(
-            character.ContentId, character.Name, area.Name, World(character.HomeWorld), World(character.CurrentWorld),
-            Race(character.Appearance?.Race),
-            character.Appearance?.Gender switch { 0 => "男", 1 => "女", _ => null },
-            character.ClassJobId, character.Level,
-            character.DetailError,
-            character.Equipment.Where(item => item.Model != 0).Select(item => new GameEquipment(
-                item.Slot, item.Model, item.ModelType, item.Variant, item.Stain1, item.Stain2)).ToArray())).ToArray());
+    private static GameResponse Present(GameSession session)
+    {
+        var catalog = session.Catalog;
+        var current = catalog.Choice is { } choice ? Preview(session, choice.Id) : null;
+        var index = session.ViewIndex;
+        var roster = index is { } selected ? catalog.Rosters.GetValueOrDefault(selected) : null;
+        return new(catalog.Accounts.Select(account => new GameAccount(account.Index, account.Name)).ToArray(), index,
+            roster?.Characters.Select(character => Present(Preview(session, character.ContentId)!, session.Area)).ToArray() ?? [],
+            Current: current is null ? null : Present(current, session.Area), Cached: roster is not null,
+            CurrentIndex: catalog.Choice?.Index);
+    }
+
+    private static GameCharacter Present(PreviewCharacter entry, GameArea area)
+    {
+        var character = entry.Character;
+        return new(character.ContentId, character.Name, area.Name, World(character.HomeWorld), World(character.CurrentWorld),
+            Race(character.Appearance?.Race), character.Appearance?.Gender switch { 0 => "男", 1 => "女", _ => null },
+            character.ClassJobId, character.Level, character.DetailError,
+            CharacterScene.DescribeGear(character.Equipment), CharacterData.GetTribeName(character.Appearance?.Tribe),
+            entry.PortraitRoot, entry.Revision.ToString("D"), FormatBirthday(character.Birthday),
+            CharacterData.GetGuardianName(character.GuardianDeityId));
+    }
+
+    private static string? FormatBirthday(CharacterBirthday? birthday) => birthday is { Month: >= 1 and <= 12, Day: >= 1 and <= 32 }
+        ? $"{(birthday.Month % 2 == 1 ? '星' : '灵')}{"一二三四五六"[(birthday.Month - 1) / 2]}月{birthday.Day}日" : null;
 
     private static string? Race(int? value) => value is >= 1 and <= 8 ? RaceNames[value.Value] : null;
 
-    private static string World(CharacterWorld world) => world.Name.Length > 0
-        ? world.Name : world.Id == 0 ? "未获取" : world.Id.ToString(CultureInfo.InvariantCulture);
+    private static string? KnownWorld(CharacterWorld world) => world.Name.Length > 0 ? world.Name : CharacterData.GetWorldName(world.Id);
+    private static string World(CharacterWorld world) => KnownWorld(world) ?? (world.Id == 0 ? "未获取" : world.Id.ToString(CultureInfo.InvariantCulture));
 
     internal void Dispose()
     {
@@ -308,14 +390,16 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         internal bool SignedOut { get; set; }
     }
 
-    private sealed class GameSession(GameAuthorization authorization, GameArea area, string versionInfo, CommunityAttempt community,
-        LobbyRoster roster)
+    private sealed class GameSession(GameAuthorization authorization, GameArea area, string directory, CommunityAttempt community,
+        CachedCatalog catalog)
     {
+        internal Guid Id { get; } = Guid.NewGuid();
         internal GameAuthorization Authorization { get; } = authorization;
-        internal GameArea Area { get; } = area;
-        internal string VersionInfo { get; } = versionInfo;
+        internal GameArea Area { get; set; } = area;
+        internal string Directory { get; } = directory;
         internal CommunityAttempt Community { get; } = community;
-        internal LobbyRoster Roster { get; set; } = roster;
+        internal CachedCatalog Catalog { get; set; } = catalog;
+        internal int? ViewIndex { get; set; } = catalog.Choice?.Index ?? catalog.ViewIndex;
     }
 
     private sealed class CommunityAttempt : IDisposable
@@ -360,7 +444,10 @@ internal sealed record GameResponse(
     [property: JsonPropertyName("selectedIndex")] int? SelectedIndex,
     [property: JsonPropertyName("characters")] GameCharacter[] Characters,
     [property: JsonPropertyName("error")] string? Error = null,
-    [property: JsonPropertyName("notice")] string? Notice = null);
+    [property: JsonPropertyName("notice")] string? Notice = null,
+    [property: JsonPropertyName("current")] GameCharacter? Current = null,
+    [property: JsonPropertyName("cached")] bool Cached = false,
+    [property: JsonPropertyName("currentIndex")] int? CurrentIndex = null);
 
 internal sealed record GameAccount(
     [property: JsonPropertyName("index")] int Index,
@@ -377,12 +464,9 @@ internal sealed record GameCharacter(
     [property: JsonPropertyName("classJobId")] int? ClassJobId,
     [property: JsonPropertyName("level")] int? Level,
     [property: JsonPropertyName("detailError")] string? DetailError,
-    [property: JsonPropertyName("gear")] GameEquipment[] Gear);
-
-internal sealed record GameEquipment(
-    [property: JsonPropertyName("slot")] string Slot,
-    [property: JsonPropertyName("model")] ushort Model,
-    [property: JsonPropertyName("modelType")] ushort ModelType,
-    [property: JsonPropertyName("variant")] ushort Variant,
-    [property: JsonPropertyName("stain1")] byte Stain1,
-    [property: JsonPropertyName("stain2")] byte Stain2);
+    [property: JsonPropertyName("gear")] SceneGear[] Gear,
+    [property: JsonPropertyName("tribe")] string? Tribe,
+    [property: JsonPropertyName("portraitRoot")] string PortraitRoot,
+    [property: JsonPropertyName("revision")] string Revision,
+    [property: JsonPropertyName("birthday")] string? Birthday,
+    [property: JsonPropertyName("deity")] string? Deity);
