@@ -37,10 +37,19 @@ internal sealed class ClientCommands : IDisposable
     {
         var snapshot = Volatile.Read(ref community)?.Snapshot;
         return snapshot is null ? null : new CommunityStatus(snapshot.State, snapshot.Detail,
-            snapshot.Bindings.Select(binding => new BoundCharacter(binding.Character, binding.World)).ToArray());
+            snapshot.Bindings.Select(binding => new BoundCharacter(binding.Character, binding.World)).ToArray(),
+            snapshot.JobsStatus, snapshot.JobProfile is { } profile
+                ? new CommunityJobStatus(profile.Character, profile.Area, profile.World, profile.Levels) : null);
     }
 
     public Task<bool> OpenCommunity() => MainThread.InvokeOnMainThreadAsync(browser.OpenAsync);
+    public Task<bool> ReadCommunityJobs() => MainThread.InvokeOnMainThreadAsync(browser.ReadJobsAsync);
+    public Task<string?> SelectCommunityCharacter(string contentId) => MainThread.InvokeOnMainThreadAsync(async () =>
+    {
+        if (game.FindCommunityCharacter(contentId) is not { } selection || !ReferenceEquals(selection.Authorization, communityOwner))
+            return "无法核对所选游戏角色，请重新读取角色列表。";
+        return await browser.SelectRoleAsync(selection.Character, () => game.FindCommunityCharacter(contentId) == selection);
+    });
 
     private void OnGameSessionChanged() => MainThread.BeginInvokeOnMainThread(() =>
     {
@@ -201,7 +210,15 @@ internal sealed record VersionProgress(
 internal sealed record CommunityStatus(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("detail")] string Detail,
-    [property: JsonPropertyName("bindings")] BoundCharacter[] Bindings);
+    [property: JsonPropertyName("bindings")] BoundCharacter[] Bindings,
+    [property: JsonPropertyName("jobsStatus")] string JobsStatus,
+    [property: JsonPropertyName("jobProfile")] CommunityJobStatus? JobProfile);
+
+internal sealed record CommunityJobStatus(
+    [property: JsonPropertyName("character")] string Character,
+    [property: JsonPropertyName("area")] string Area,
+    [property: JsonPropertyName("world")] string World,
+    [property: JsonPropertyName("levels")] IReadOnlyDictionary<string, int> Levels);
 
 internal sealed record BoundCharacter(
     [property: JsonPropertyName("character")] string Character,

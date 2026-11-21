@@ -5,13 +5,24 @@ using System.Web;
 namespace Lodestone.Core.Community;
 
 public sealed record CommunityBinding(string Character, string World);
-public sealed record CommunitySnapshot(string State, string Detail, IReadOnlyList<CommunityBinding> Bindings);
+public sealed record CommunityCharacter(string Character, string Area, string World);
+public sealed record CommunityJobProfile(string Character, string Area, string World, IReadOnlyDictionary<string, int> Levels);
+public sealed record CommunitySnapshot(string State, string Detail, IReadOnlyList<CommunityBinding> Bindings)
+{
+    public CommunityJobProfile? JobProfile { get; init; }
+    public string JobsStatus { get; init; } = "idle";
+}
 
 public sealed class RisingStonesSession(string accountId, bool reusesSession = false)
 {
     public const string ServiceUrl = "https://apiff14risingstones.web.sdo.com/api/home/GHome/login";
     public const string StatusUrl = "https://apiff14risingstones.web.sdo.com/api/home/GHome/isLogin";
     public const string BindingsUrl = "https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2";
+    public const string ProfileUrl = "https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo";
+    public const string AreasUrl = "https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getAreaAndGroupList";
+    public const string CharactersUrl = "https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters";
+    public const string SelectRoleUrl = "https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/bindCharacterInfo";
+    public const int MaxProfileBytes = 512 * 1024;
     private readonly object gate = new();
     private CommunitySnapshot snapshot = reusesSession
         ? new("starting", "正在通过盛趣会话验证石之家", [])
@@ -19,11 +30,71 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     private bool verified;
     private CommunityBinding[]? bindingSummary;
     private CommunityBinding? currentRole;
+    private CommunityCharacter? selectedRole;
 
     public static Uri Entry { get; } = new(ServiceUrl + "?redirectUrl="
         + "https%3A%2F%2Fff14risingstones.web.sdo.com%2Fpc%2Findex.html%23%2Fpost");
 
     public CommunitySnapshot Snapshot { get { lock (gate) return snapshot; } }
+    public bool CanSelectRole { get { lock (gate) return verified; } }
+
+    public bool HasSelectedRole(CommunityCharacter role)
+    {
+        lock (gate)
+            return verified && (selectedRole == role || snapshot.JobProfile is { } profile
+                && (profile.Character, profile.Area, profile.World) == (role.Character, role.Area, role.World));
+    }
+
+    public static int? FindAreaId(byte[] body, string area)
+    {
+        if (!TryReadResponse(body, out var data, out var code, MaxProfileBytes) || !IsSuccess(code)
+            || data.ValueKind != JsonValueKind.Array)
+            return null;
+        int? match = null;
+        foreach (var row in data.EnumerateArray())
+        {
+            if (Text(row, "AreaName") != area)
+                continue;
+            if (match is not null || !int.TryParse(Text(row, "AreaID"), NumberStyles.None, CultureInfo.InvariantCulture, out var id)
+                || id <= 0)
+                return null;
+            match = id;
+        }
+        return match;
+    }
+
+    public static string? FindCharacterId(byte[] body, CommunityCharacter character)
+    {
+        if (!TryReadResponse(body, out var data, out var code, MaxProfileBytes) || !IsSuccess(code)
+            || data.ValueKind != JsonValueKind.Array)
+            return null;
+        string? match = null;
+        foreach (var row in data.EnumerateArray())
+        {
+            if (Text(row, "character_name") != character.Character || Text(row, "group_name") != character.World)
+                continue;
+            var id = Text(row, "character_id");
+            if (match is not null || !ulong.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value == 0)
+                return null;
+            match = id;
+        }
+        return match;
+    }
+
+    public bool ObserveRoleChange(byte[] body, CommunityCharacter role)
+    {
+        lock (gate)
+        {
+            if (!verified || !TryReadResponse(body, out _, out var code) || !IsSuccess(code))
+                return false;
+            selectedRole = role;
+            currentRole = null;
+            bindingSummary = [new CommunityBinding(role.Character, role.World)];
+            snapshot = snapshot with { JobProfile = null, JobsStatus = "idle" };
+            PresentRoles();
+            return true;
+        }
+    }
 
     public static bool IsAllowedPage(Uri uri) => IsHttps(uri) && (uri.Host switch
     {
@@ -104,12 +175,8 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
             if (!verified)
                 snapshot = new("connected", "石之家会话已验证，正在检查社区角色", []);
             verified = true;
-            if (requiresRole)
-            {
-                bindingSummary = [];
-                currentRole = null;
-                PresentRoles();
-            }
+            if (requiresRole && selectedRole is null)
+                RequireCommunityRole();
         }
     }
 
@@ -117,13 +184,11 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     {
         lock (gate)
         {
-            if (!verified || !TryReadResponse(body, out var data, out var code))
+            if (!verified || selectedRole is not null || !TryReadResponse(body, out var data, out var code))
                 return;
             if (IsRoleRequired(code))
             {
-                bindingSummary = [];
-                currentRole = null;
-                PresentRoles();
+                RequireCommunityRole();
                 return;
             }
             if (code is not null && !IsSuccess(code))
@@ -161,25 +226,108 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     {
         lock (gate)
         {
-            if (!verified || !TryReadResponse(body, out var data, out var code) || !IsSuccess(code))
+            if (!verified)
                 return;
+            if (!TryReadResponse(body, out var data, out var code, MaxProfileBytes))
+            {
+                JobReadFailed();
+                return;
+            }
+            if (IsRoleRequired(code))
+            {
+                RequireCommunityRole();
+                return;
+            }
+            if (code == 10403)
+            {
+                Unverified("expired", "石之家会话已过期");
+                return;
+            }
             var character = Text(data, "character_name");
             var world = Text(data, "group_name");
-            if (character is null || world is null)
+            if (!IsSuccess(code) || character is null || world is null)
+            {
+                JobReadFailed();
                 return;
-            currentRole = new CommunityBinding(character, world);
+            }
+            var role = new CommunityBinding(character, world);
+            var area = Text(data, "area_name");
+            if (selectedRole is not null && selectedRole != new CommunityCharacter(character, area ?? "", world)
+                || bindingSummary is { Length: > 0 } && !bindingSummary.Contains(role))
+            {
+                JobReadFailed();
+                return;
+            }
+            currentRole = role;
             PresentRoles();
+            var levels = ReadCareerLevels(data);
+            snapshot = snapshot with
+            {
+                JobProfile = area is not null && levels.Count > 0 ? new(character, area, world, levels) : null,
+                JobsStatus = area is not null && levels.Count > 0 ? "ready" : "unavailable"
+            };
         }
+    }
+
+    public bool BeginJobRead()
+    {
+        lock (gate)
+        {
+            if (!verified || snapshot.State != "connected" || snapshot.JobsStatus == "loading")
+                return false;
+            snapshot = snapshot with { JobProfile = null, JobsStatus = "loading" };
+            return true;
+        }
+    }
+
+    public void JobReadFailed()
+    {
+        lock (gate)
+        {
+            if (snapshot.JobsStatus == "loading")
+                snapshot = snapshot with { JobProfile = null, JobsStatus = "unavailable" };
+        }
+    }
+
+    private static Dictionary<string, int> ReadCareerLevels(JsonElement data)
+    {
+        var levels = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (data.TryGetProperty("careerLevel", out var rows) && rows.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var row in rows.EnumerateArray().Take(64))
+            {
+                var career = Text(row, "career");
+                if (career is not null && byte.TryParse(Text(row, "character_level"), NumberStyles.None,
+                    CultureInfo.InvariantCulture, out var level))
+                    levels.TryAdd(career, level);
+            }
+        }
+        return levels;
+    }
+
+    private void RequireCommunityRole()
+    {
+        bindingSummary = [];
+        currentRole = null;
+        selectedRole = null;
+        PresentRoles();
     }
 
     private void PresentRoles()
     {
         if (bindingSummary is { Length: > 0 })
-            snapshot = new("connected", "石之家登录已验证", bindingSummary);
+        {
+            if (currentRole is not null && !bindingSummary.Contains(currentRole))
+            {
+                currentRole = null;
+                snapshot = snapshot with { JobProfile = null, JobsStatus = "idle" };
+            }
+            snapshot = snapshot with { State = "connected", Detail = "石之家登录已验证", Bindings = bindingSummary };
+        }
         else if (currentRole is not null)
-            snapshot = new("connected", "石之家登录已验证", [currentRole]);
+            snapshot = snapshot with { State = "connected", Detail = "石之家登录已验证", Bindings = [currentRole] };
         else if (bindingSummary is not null)
-            snapshot = new("unbound", "石之家已登录，请在官方窗口选择社区角色", []);
+            snapshot = new("unbound", "石之家已登录，请从客户端角色列表选择要同步的角色", []);
     }
 
     private bool MatchesAccount(JsonElement data, bool ticketOnlyProfile)
@@ -216,6 +364,7 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
         verified = false;
         bindingSummary = null;
         currentRole = null;
+        selectedRole = null;
         snapshot = new(state, detail, []);
     }
 
@@ -242,11 +391,11 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
         return text is { Length: > 0 and <= 128 } && !text.Any(char.IsControl) ? text : null;
     }
 
-    private static bool TryReadResponse(byte[] body, out JsonElement data, out int? code)
+    private static bool TryReadResponse(byte[] body, out JsonElement data, out int? code, int maxBytes = 64 * 1024)
     {
         data = default;
         code = null;
-        if (body.Length > 64 * 1024)
+        if (body.Length > maxBytes)
             return false;
         try
         {

@@ -102,6 +102,102 @@ public sealed class CommunityTests
         Assert.Empty(session.Snapshot.Bindings);
     }
 
+    [Fact]
+    public void ReadsOfficialCharacterCareerLevelsAfterVerifyingTheCommunitySession()
+    {
+        var session = new RisingStonesSession("fixture", reusesSession: true);
+        var profile = """
+            {"code":10000,"data":{"character_name":"测试角色","area_name":"示例大区","group_name":"示例世界",
+              "careerLevel":[{"career":"学者","character_level":"91","career_type":"战斗精英"},
+                {"career":"刻木匠","character_level":100},{"career":"采矿工","character_level":"0"},
+                {"career":"绝枪战士","character_level":"******"}]}}
+            """u8.ToArray();
+
+        Assert.False(session.BeginJobRead());
+        session.ObserveCurrentRole(profile);
+        Assert.Null(session.Snapshot.JobProfile);
+        session.ObserveLogin("""{"code":10000,"data":{}}"""u8.ToArray(), ticketOnlyProfile: true);
+        Assert.True(session.BeginJobRead());
+        Assert.False(session.BeginJobRead());
+        session.ObserveCurrentRole(profile);
+
+        Assert.Equal("ready", session.Snapshot.JobsStatus);
+        var jobs = Assert.IsType<CommunityJobProfile>(session.Snapshot.JobProfile);
+        Assert.Equal(("测试角色", "示例大区", "示例世界"), (jobs.Character, jobs.Area, jobs.World));
+        Assert.Equal(3, jobs.Levels.Count);
+        Assert.Equal(91, jobs.Levels["学者"]);
+        Assert.Equal(100, jobs.Levels["刻木匠"]);
+        Assert.Equal(0, jobs.Levels["采矿工"]);
+
+        session.ObserveCurrentRole("""{"code":10403,"msg":"请先登录"}"""u8.ToArray());
+        Assert.Equal("expired", session.Snapshot.State);
+        Assert.Null(session.Snapshot.JobProfile);
+    }
+
+    [Fact]
+    public void DoesNotAttachACommunityProfileToADifferentBinding()
+    {
+        var session = new RisingStonesSession("fixture", reusesSession: true);
+        session.ObserveLogin("""{"code":10000,"data":{}}"""u8.ToArray(), ticketOnlyProfile: true);
+        session.ObserveBindings("""{"code":10000,"data":{"character_name":"测试角色","group_name":"示例世界"}}"""u8.ToArray());
+        Assert.True(session.BeginJobRead());
+        session.ObserveCurrentRole("""
+            {"code":10000,"data":{"character_name":"测试角色","area_name":"示例大区","group_name":"另一个世界",
+            "careerLevel":[{"career":"学者","character_level":"91"}]}}
+            """u8.ToArray());
+        Assert.Null(session.Snapshot.JobProfile);
+        Assert.Equal("unavailable", session.Snapshot.JobsStatus);
+
+        Assert.True(session.BeginJobRead());
+        session.ObserveCurrentRole("""{"code":10103,"data":{}}"""u8.ToArray());
+        Assert.Equal("unbound", session.Snapshot.State);
+        Assert.Null(session.Snapshot.JobProfile);
+    }
+
+    [Fact]
+    public void ResolvesTheSelectedRosterCharacterUsingTheCommunityIdWithoutLosingPrecision()
+    {
+        var areas = """{"code":10000,"data":[{"AreaID":"6","AreaName":"示例大区"},{"AreaID":2,"AreaName":"另一个大区"}]}"""u8.ToArray();
+        var roster = """
+            {"code":10000,"data":[{"character_name":"测试角色","group_name":"示例世界","character_id":9007199254740997},
+            {"character_name":"测试角色","group_name":"另一个世界","character_id":"9007199254740999"}]}
+            """u8.ToArray();
+        var target = new CommunityCharacter("测试角色", "示例大区", "示例世界");
+        Assert.Equal(6, RisingStonesSession.FindAreaId(areas, target.Area));
+        Assert.Equal("9007199254740997", RisingStonesSession.FindCharacterId(roster, target));
+        Assert.Equal("9007199254740999", RisingStonesSession.FindCharacterId(roster, target with { World = "另一个世界" }));
+        Assert.Null(RisingStonesSession.FindCharacterId(roster, target with { World = "未知世界" }));
+    }
+
+    [Fact]
+    public void AConfirmedRoleChangeReplacesThePreviousLevelsAndRejectsStaleProfiles()
+    {
+        var session = new RisingStonesSession("fixture", reusesSession: true);
+        var target = new CommunityCharacter("同名角色", "示例大区", "示例世界");
+        var success = """{"code":10002,"data":{}}"""u8.ToArray();
+        var previous = """
+            {"code":10000,"data":{"character_name":"同名角色","area_name":"另一个大区","group_name":"示例世界",
+            "careerLevel":[{"career":"学者","character_level":"19"}]}}
+            """u8.ToArray();
+        Assert.False(session.ObserveRoleChange(success, target));
+        session.ObserveLogin("""{"code":10000,"data":{}}"""u8.ToArray(), ticketOnlyProfile: true);
+        session.ObserveCurrentRole(previous);
+        Assert.NotNull(session.Snapshot.JobProfile);
+        Assert.False(session.ObserveRoleChange("""{"code":10403}"""u8.ToArray(), target));
+        Assert.True(session.ObserveRoleChange(success, target));
+        Assert.True(session.HasSelectedRole(target));
+        Assert.Null(session.Snapshot.JobProfile);
+        session.ObserveBindings("""{"code":10000,"data":{"character_name":"无关角色","group_name":"示例世界"}}"""u8.ToArray());
+        Assert.Equal(target.Character, Assert.Single(session.Snapshot.Bindings).Character);
+        session.ObserveCurrentRole(previous);
+        Assert.Null(session.Snapshot.JobProfile);
+        session.ObserveCurrentRole("""
+            {"code":10000,"data":{"character_name":"同名角色","area_name":"示例大区","group_name":"示例世界",
+            "careerLevel":[{"career":"学者","character_level":"99"}]}}
+            """u8.ToArray());
+        Assert.Equal(99, Assert.IsType<CommunityJobProfile>(session.Snapshot.JobProfile).Levels["学者"]);
+    }
+
     [Theory]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2", "GET", true)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=1", "GET", true)]
@@ -122,9 +218,11 @@ public sealed class CommunityTests
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters?AreaID=6&uuid=123", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com.example.org/api/home/groupAndRole/getFF14Characters?AreaID=6", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/bindCharacterInfo", "POST", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/bindCharacterInfo?tempsuid=fixture", "POST", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/bindCharacterInfo", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo", "GET", true)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo?tempsuid=fixture", "GET", true)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo?tempsuid=fixture", "POST", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo?uuid=123", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com.example.org/api/home/GHome/isLogin", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/GHome/login", "GET", true)]

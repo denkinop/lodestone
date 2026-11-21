@@ -111,7 +111,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             lock (gate)
             {
                 token.ThrowIfCancellationRequested();
-                session = new GameSession(authorization, area, version.VersionInfo, new CommunityAttempt(auth, authorization));
+                session = new GameSession(authorization, area, version.VersionInfo, new CommunityAttempt(auth, authorization), result);
                 auth = null;
             }
             SessionChanged?.Invoke();
@@ -165,12 +165,28 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         {
             var result = await lobby.ReadAsync(authorized.Area, authorized.Authorization, authorized.VersionInfo,
                 (ushort)lobbyVersion(), index, current.Cancellation.Token);
-            current.Cancellation.Token.ThrowIfCancellationRequested();
+            lock (gate)
+            {
+                current.Cancellation.Token.ThrowIfCancellationRequested();
+                authorized.Roster = result;
+            }
             return Present(result, authorized.Area);
         }
         catch (OperationCanceledException) { return Failed("已取消角色查询"); }
         catch (LobbyException ex) { return Failed(ex.Message); }
         finally { Finish(current); }
+    }
+
+    internal (GameAuthorization Authorization, CommunityCharacter Character)? FindCommunityCharacter(string contentId)
+    {
+        lock (gate)
+        {
+            if (session is not { } active || operation is not null)
+                return null;
+            var character = active.Roster.Characters.FirstOrDefault(entry => entry.ContentId == contentId);
+            return character is not null && character.HomeWorld.Name.Length > 0
+                ? (active.Authorization, new CommunityCharacter(character.Name, active.Area.Name, character.HomeWorld.Name)) : null;
+        }
     }
 
     internal GameProgress? GetProgress(string requestId)
@@ -292,7 +308,15 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         internal bool SignedOut { get; set; }
     }
 
-    private sealed record GameSession(GameAuthorization Authorization, GameArea Area, string VersionInfo, CommunityAttempt Community);
+    private sealed class GameSession(GameAuthorization authorization, GameArea area, string versionInfo, CommunityAttempt community,
+        LobbyRoster roster)
+    {
+        internal GameAuthorization Authorization { get; } = authorization;
+        internal GameArea Area { get; } = area;
+        internal string VersionInfo { get; } = versionInfo;
+        internal CommunityAttempt Community { get; } = community;
+        internal LobbyRoster Roster { get; set; } = roster;
+    }
 
     private sealed class CommunityAttempt : IDisposable
     {

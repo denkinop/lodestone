@@ -2,10 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   beginGameLogin, cancelGameOperation, getCommunityStatus, getGameAreas, getGameProgress, getSavedGameArea,
-  openCommunity, selectServiceAccount, signOutGame,
+  openCommunity, readCommunityJobs, selectCommunityCharacter, selectServiceAccount, signOutGame,
   type CommunityStatus, type GameArea, type GameProgress, type GameResponse,
 } from './bridge'
-import { lobbyJobName } from './jobs'
+import JobLevels from './JobLevels.vue'
+import { communityJobProgress, lobbyJobName } from './jobs'
 
 const emit = defineEmits<{ back: [] }>()
 const mode = ref<'phone' | 'scan'>('phone')
@@ -23,7 +24,27 @@ const loadingAreas = ref(false)
 const roster = ref<GameResponse>()
 const community = ref<CommunityStatus>()
 const characterId = ref<string>()
+const syncingCharacter = ref(false)
+const syncError = ref('')
 const character = computed(() => roster.value?.characters.find(item => item.id === characterId.value))
+const communityProfileMatches = computed(() => {
+  const profile = community.value?.jobProfile
+  const selected = character.value
+  return profile && selected && profile.character === selected.name && profile.area === selected.area
+    && profile.world === selected.homeWorld
+})
+const jobs = computed(() => communityProfileMatches.value && community.value?.jobProfile
+  ? communityJobProgress(community.value.jobProfile.levels, character.value?.classJobId ?? null) : undefined)
+const jobsMessage = computed(() => {
+  const state = community.value
+  if (syncingCharacter.value) return '正在同步石之家角色'
+  if (!state || state.state === 'starting' || state.jobsStatus === 'loading') return '正在读取石之家职业等级'
+  if (state.state === 'unbound') return '点选角色后可同步石之家并读取职业等级。'
+  if (state.state !== 'connected') return '验证石之家登录后可读取职业等级。'
+  if (state.jobProfile && !communityProfileMatches.value)
+    return `石之家返回的是 ${state.jobProfile.character} · ${state.jobProfile.world} 的等级。`
+  return '石之家尚未返回所选角色的职业等级。'
+})
 const slotNames: Record<string, string> = {
   main_hand: '主手', off_hand: '副手', head: '头部', body: '身体', hands: '手部', legs: '腿部',
   feet: '脚部', ears: '耳饰', neck: '项链', wrists: '手镯', right_ring: '右戒指', left_ring: '左戒指',
@@ -74,6 +95,7 @@ async function run(operation: (id: string) => Promise<GameResponse>, status: str
     else {
       roster.value = result
       if (result.notice) notice.value = result.notice
+      syncError.value = ''
       characterId.value = result.characters[0]?.id
       if (!communityPoll) void refreshCommunity(communityGeneration)
     }
@@ -101,7 +123,32 @@ async function showCommunity() {
   } catch {
     // Keep the authenticated game session available.
   }
-  community.value = { state: 'failed', detail: '无法打开石之家官方确认窗口', bindings: [] }
+  community.value = { state: 'failed', detail: '无法打开石之家官方确认窗口', bindings: [], jobsStatus: 'idle', jobProfile: null }
+}
+
+async function reloadJobs() {
+  try {
+    if (!await readCommunityJobs()) syncError.value = '石之家会话暂时无法读取职业等级。'
+  } catch {
+    syncError.value = '无法重新读取石之家职业等级。'
+  }
+}
+
+async function selectCharacter(id: string) {
+  if (active.value || syncingCharacter.value) return
+  characterId.value = id
+  syncError.value = ''
+  if (community.value?.state !== 'connected' && community.value?.state !== 'unbound') return
+  const generation = communityGeneration
+  syncingCharacter.value = true
+  try {
+    const message = await selectCommunityCharacter(id)
+    if (generation === communityGeneration) syncError.value = message ?? ''
+  } catch {
+    if (generation === communityGeneration) syncError.value = '无法同步石之家角色。'
+  } finally {
+    if (generation === communityGeneration) syncingCharacter.value = false
+  }
 }
 
 function clearCommunity() {
@@ -109,6 +156,8 @@ function clearCommunity() {
   clearTimeout(communityPoll)
   communityPoll = undefined
   community.value = undefined
+  syncingCharacter.value = false
+  syncError.value = ''
 }
 
 function clearOperation() {
@@ -241,7 +290,7 @@ onBeforeUnmount(() => {
       <div class="game-actions">
         <button class="secondary" type="button" @click="logout">退出游戏登录</button>
         <label v-if="roster.accounts.length" for="service-account">服务账号</label>
-        <select v-if="roster.accounts.length" id="service-account" :value="roster.selectedIndex ?? ''" :disabled="Boolean(active)"
+        <select v-if="roster.accounts.length" id="service-account" :value="roster.selectedIndex ?? ''" :disabled="Boolean(active) || syncingCharacter"
           @change="choose(Number(($event.target as HTMLSelectElement).value))">
           <option value="" disabled>请选择服务账号</option>
           <option v-for="entry in roster.accounts" :key="entry.index" :value="entry.index">{{ entry.name || '服务账号 ' + (entry.index + 1) }}</option>
@@ -251,8 +300,12 @@ onBeforeUnmount(() => {
       <p v-else-if="roster.selectedIndex !== null && !roster.characters.length">所选服务账号没有角色。</p>
       <div v-if="roster.characters.length" class="game-characters">
         <button v-for="item in roster.characters" :key="item.id" class="secondary" type="button"
-          :aria-pressed="item.id === characterId" @click="characterId = item.id">{{ item.name }} · {{ item.homeWorld }}</button>
+          :aria-pressed="item.id === characterId" :disabled="Boolean(active) || syncingCharacter"
+          @click="selectCharacter(item.id)">{{ item.name }} · {{ item.homeWorld }}</button>
       </div>
+      <p v-if="roster.characters.length && (community?.state === 'connected' || community?.state === 'unbound')" class="game-sync-note">
+        点选角色会同步切换石之家的绑定角色。
+      </p>
       <section v-if="character" class="game-character">
         <h2>{{ character.name }}</h2>
         <dl class="detail-grid">
@@ -264,6 +317,15 @@ onBeforeUnmount(() => {
           <div><dt>当前职业</dt><dd>{{ lobbyJobName(character.classJobId) ?? '未获取' }}</dd></div>
           <div><dt>当前职业等级</dt><dd>{{ character.level == null ? '未获取' : `Lv. ${character.level}` }}</dd></div>
         </dl>
+        <JobLevels v-if="jobs" class="game-job-levels" :progress="jobs" />
+        <div v-else class="game-job-levels">
+          <p role="status">{{ jobsMessage }}</p>
+          <button v-if="!syncingCharacter && (community?.state === 'unbound' || community?.state === 'connected' && community.jobProfile)"
+            class="secondary" type="button" @click="selectCharacter(character.id)">同步所选角色</button>
+          <button v-else-if="!syncingCharacter && community?.state === 'connected' && community.jobsStatus !== 'loading'"
+            class="secondary" type="button" @click="reloadJobs">重新读取职业等级</button>
+        </div>
+        <p v-if="syncError" class="game-error" role="alert">{{ syncError }}</p>
         <p v-if="character.detailError" role="status">{{ character.detailError }}</p>
         <table v-if="character.gear.length" class="game-gear">
           <thead><tr><th scope="col">部位</th><th scope="col">模型</th><th scope="col">变体</th><th scope="col">染色</th></tr></thead>
@@ -291,6 +353,8 @@ onBeforeUnmount(() => {
 .game-remember { display: flex; align-items: center; gap: .4rem; }
 .game-actions, .game-characters { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .game-characters, .game-character, .game-progress, .game-error { margin-top: 16px; }
+.game-job-levels { margin-block: 16px; }
+.game-sync-note { margin-block: 8px 0; color: var(--muted); }
 .game-progress img { display: block; margin-block: 8px; image-rendering: pixelated; }
 .game-progress button { margin-top: 8px; }
 .game-gear { width: 100%; margin-top: 16px; border-collapse: collapse; }

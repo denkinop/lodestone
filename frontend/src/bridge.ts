@@ -51,6 +51,8 @@ export interface CommunityStatus {
   state: string
   detail: string
   bindings: { character: string; world: string }[]
+  jobsStatus: string
+  jobProfile: { character: string; area: string; world: string; levels: Record<string, number> } | null
 }
 
 declare global {
@@ -82,6 +84,8 @@ export const cancelGameOperation = (id: string) => invokeClient<boolean>('Cancel
 export const signOutGame = () => invokeClient<boolean>('SignOutGame')
 export const getCommunityStatus = () => invokeClient<CommunityStatus | null>('GetCommunityStatus')
 export const openCommunity = () => invokeClient<boolean>('OpenCommunity')
+export const readCommunityJobs = () => invokeClient<boolean>('ReadCommunityJobs')
+export const selectCommunityCharacter = (id: string) => invokeClient<string | null>('SelectCommunityCharacter', [id])
 
 export async function preparePreview(characterId: number) {
   try {
