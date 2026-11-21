@@ -68,15 +68,63 @@ public sealed class CommunityTests
     }
 
     [Theory]
+    [InlineData("{\"code\":10103,\"data\":{}}")]
+    [InlineData("{\"code\":\"10104\"}")]
+    public void OfficialRoleSelectionStatusKeepsTheVerifiedTicketSession(string response)
+    {
+        var session = new RisingStonesSession("9999999999001", reusesSession: true);
+        var body = System.Text.Encoding.UTF8.GetBytes(response);
+        session.ObserveLogin(body);
+        Assert.Equal("identity", session.Snapshot.State);
+
+        session.ObserveLogin(body, ticketOnlyProfile: true);
+        Assert.Equal("unbound", session.Snapshot.State);
+        Assert.Empty(session.Snapshot.Bindings);
+
+        session.ObserveLogin("""{"code":10103,"data":{"isLogin":false}}"""u8.ToArray(), ticketOnlyProfile: true);
+        Assert.Equal("expired", session.Snapshot.State);
+    }
+
+    [Fact]
+    public void OfficialBindingResponseProvidesTheRoleNameAndWorld()
+    {
+        var session = new RisingStonesSession("9999999999001", reusesSession: true);
+        session.ObserveLogin("""{"code":10000,"data":{"sndaId":"another-account"}}"""u8.ToArray(), ticketOnlyProfile: true);
+        Assert.Equal("identity", session.Snapshot.State);
+
+        session.ObserveLogin("""{"code":10000,"data":{}}"""u8.ToArray(), ticketOnlyProfile: true);
+        session.ObserveBindings("""{"code":10000,"data":{"character_name":"测试角色","group_name":"示例世界"}}"""u8.ToArray());
+        Assert.Equal("connected", session.Snapshot.State);
+        Assert.Equal(new CommunityBinding("测试角色", "示例世界"), Assert.Single(session.Snapshot.Bindings));
+
+        session.ObserveBindings("""{"code":10103,"data":{}}"""u8.ToArray());
+        Assert.Equal("unbound", session.Snapshot.State);
+        Assert.Empty(session.Snapshot.Bindings);
+    }
+
+    [Theory]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2", "GET", true)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=1", "GET", true)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=3", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2", "POST", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2", "OPTIONS", true)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2&tempsuid=fixture", "GET", true)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2&platform=2", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/characterBind", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getAreaAndGroupList", "GET", true)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getAreaAndGroupList", "POST", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters?AreaID=6", "GET", true)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters?AreaID=6&tempsuid=fixture", "OPTIONS", true)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters?AreaID=6", "POST", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters", "GET", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters?AreaID=0", "GET", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters?AreaID=6&AreaID=7", "GET", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters?AreaID=6&uuid=123", "GET", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com.example.org/api/home/groupAndRole/getFF14Characters?AreaID=6", "GET", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/bindCharacterInfo", "POST", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/bindCharacterInfo", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo", "GET", true)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo?tempsuid=fixture", "GET", true)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo?uuid=123", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com.example.org/api/home/GHome/isLogin", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/GHome/login", "GET", true)]

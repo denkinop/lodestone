@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text.Json;
+using System.Web;
 
 namespace Lodestone.Core.Community;
 
@@ -38,13 +40,30 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
         && uri.AbsolutePath.StartsWith("/sdo/", StringComparison.Ordinal);
 
     public static bool IsLoginStatus(Uri uri) => IsApi(uri, "/api/home/GHome/isLogin");
-    public static bool IsBindingStatus(Uri uri) =>
-        IsApi(uri, "/api/home/groupAndRole/getCharacterBindInfo") && uri.Query is "?platform=1" or "?platform=2";
+    public static bool IsBindingStatus(Uri uri)
+    {
+        if (!IsApi(uri, "/api/home/groupAndRole/getCharacterBindInfo"))
+            return false;
+        var query = HttpUtility.ParseQueryString(uri.Query);
+        return query.GetValues("platform") is ["1" or "2"] && query.AllKeys.All(key => key is "platform" or "tempsuid");
+    }
 
-    public static bool IsCurrentRole(Uri uri) => IsApi(uri, "/api/home/userInfo/getUserInfo") && uri.Query.Length == 0;
+    public static bool IsCurrentRole(Uri uri) =>
+        IsApi(uri, "/api/home/userInfo/getUserInfo")
+        && HttpUtility.ParseQueryString(uri.Query).AllKeys.All(key => key == "tempsuid");
+
+    private static bool IsRoleList(Uri uri)
+    {
+        if (!IsApi(uri, "/api/home/groupAndRole/getFF14Characters"))
+            return false;
+        var query = HttpUtility.ParseQueryString(uri.Query);
+        return query.GetValues("AreaID") is [var area]
+            && int.TryParse(area, NumberStyles.None, CultureInfo.InvariantCulture, out var id) && id > 0
+            && query.AllKeys.All(key => key is "AreaID" or "tempsuid");
+    }
 
     private static bool IsReadEndpoint(Uri uri) =>
-        IsLoginStatus(uri) || IsBindingStatus(uri) || IsCurrentRole(uri)
+        IsLoginStatus(uri) || IsBindingStatus(uri) || IsCurrentRole(uri) || IsRoleList(uri)
         || IsApi(uri, "/api/home/groupAndRole/getAreaAndGroupList");
 
     public bool AllowsApiRequest(Uri uri, string method) => method switch
@@ -58,19 +77,26 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     {
         lock (gate)
         {
-            if (!TryReadData(body, out var data))
+            if (!TryReadResponse(body, out var data, out var code))
             {
                 Unverified(verified ? "failed" : "confirmation", "石之家尚未返回可验证的登录状态");
                 return;
             }
             var state = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("isLogin", out var login)
                 ? login.ValueKind : data.ValueKind;
-            if (state == JsonValueKind.False)
+            var requiresRole = IsRoleRequired(code);
+            var signedIn = code switch
+            {
+                null => state == JsonValueKind.True,
+                10000 or 10002 => state is JsonValueKind.True or JsonValueKind.Object,
+                _ => requiresRole && state != JsonValueKind.False
+            };
+            if (!signedIn)
             {
                 Unverified(verified ? "expired" : "confirmation", verified ? "石之家会话已过期" : "请在石之家官方窗口登录");
                 return;
             }
-            if (state != JsonValueKind.True || !MatchesAccount(data, ticketOnlyProfile))
+            if (!MatchesAccount(data, ticketOnlyProfile))
             {
                 Unverified("identity", "尚未核对石之家与游戏账号的一致性");
                 return;
@@ -78,6 +104,12 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
             if (!verified)
                 snapshot = new("connected", "石之家会话已验证，正在检查社区角色", []);
             verified = true;
+            if (requiresRole)
+            {
+                bindingSummary = [];
+                currentRole = null;
+                PresentRoles();
+            }
         }
     }
 
@@ -85,10 +117,29 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     {
         lock (gate)
         {
-            if (!verified || !TryReadData(body, out var data))
+            if (!verified || !TryReadResponse(body, out var data, out var code))
+                return;
+            if (IsRoleRequired(code))
+            {
+                bindingSummary = [];
+                currentRole = null;
+                PresentRoles();
+                return;
+            }
+            if (code is not null && !IsSuccess(code))
                 return;
             if (data.ValueKind == JsonValueKind.Object && data.TryGetProperty("characters", out var characters))
                 data = characters;
+            if (data.ValueKind == JsonValueKind.Object)
+            {
+                var character = Text(data, "character_name");
+                var world = Text(data, "group_name");
+                if (character is not null && world is null)
+                    return;
+                bindingSummary = character is not null && world is not null ? [new CommunityBinding(character, world)] : [];
+                PresentRoles();
+                return;
+            }
             if (data.ValueKind != JsonValueKind.Array)
                 return;
 
@@ -110,7 +161,7 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     {
         lock (gate)
         {
-            if (!verified || !TryReadData(body, out var data, expectedCode: 10000))
+            if (!verified || !TryReadResponse(body, out var data, out var code) || !IsSuccess(code))
                 return;
             var character = Text(data, "character_name");
             var world = Text(data, "group_name");
@@ -174,6 +225,10 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     private static bool IsApi(Uri uri, string path) =>
         IsHttps(uri) && uri.Host == "apiff14risingstones.web.sdo.com" && uri.AbsolutePath == path;
 
+    private static bool IsSuccess(int? code) => code is 10000 or 10002;
+
+    private static bool IsRoleRequired(int? code) => code is 10103 or 10104;
+
     private static string? Text(JsonElement data, string name)
     {
         if (data.ValueKind != JsonValueKind.Object || !data.TryGetProperty(name, out var value))
@@ -187,20 +242,26 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
         return text is { Length: > 0 and <= 128 } && !text.Any(char.IsControl) ? text : null;
     }
 
-    private static bool TryReadData(byte[] body, out JsonElement data, int? expectedCode = null)
+    private static bool TryReadResponse(byte[] body, out JsonElement data, out int? code)
     {
         data = default;
+        code = null;
         if (body.Length > 64 * 1024)
             return false;
         try
         {
             using var json = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 12 });
-            if (json.RootElement.ValueKind != JsonValueKind.Object || !json.RootElement.TryGetProperty("data", out var value))
+            var root = json.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
                 return false;
-            if (expectedCode is { } code && (!json.RootElement.TryGetProperty("code", out var responseCode)
-                || responseCode.ValueKind != JsonValueKind.Number || !responseCode.TryGetInt32(out var actual) || actual != code))
-                return false;
-            data = value.Clone();
+            if (root.TryGetProperty("code", out var responseCode))
+            {
+                if (!int.TryParse(responseCode.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var actual))
+                    return false;
+                code = actual;
+            }
+            if (root.TryGetProperty("data", out var value))
+                data = value.Clone();
             return true;
         }
         catch (JsonException) { return false; }
