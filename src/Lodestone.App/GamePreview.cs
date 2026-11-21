@@ -52,8 +52,11 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
                         try { PreviewCache.SaveScene(character, scene); }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                     }
-                    return new Prepared(id, character, JsonSerializer.SerializeToUtf8Bytes(scene.Scene, PreviewCache.Json),
-                        scene.Textures, scene.Scene.Gear.SelectMany(gear => gear.Candidates).Select(candidate => candidate.Icon)
+                    var loaded = scene.Scene.Gear.Where(entry => entry.Loaded).Select(entry => entry.Slot)
+                        .ToHashSet(StringComparer.Ordinal);
+                    var gear = CharacterScene.DescribeGear(character.Character.Equipment, loaded);
+                    return new Prepared(id, character, JsonSerializer.SerializeToUtf8Bytes(scene.Scene with { Gear = gear }, PreviewCache.Json),
+                        scene.Textures, gear.SelectMany(entry => entry.Candidates).Select(candidate => candidate.Icon)
                             .Where(icon => icon > 0).ToHashSet());
                 }
                 finally { buildLock.Release(); }

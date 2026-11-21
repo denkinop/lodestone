@@ -40,4 +40,14 @@ dotnet workload install maui-windows
 
 首次打开角色档案时，客户端从官方修复 CDN 按需读取 SqPack，用 C# 生成模型与贴图，并保存全身与面部静态肖像。后续打开档案会使用缓存。「3D 预览」可以查看并旋转角色，退出 3D 会恢复静态肖像。需要更新游戏外观、装备或 Lobby 角色资料时，在设置页选择「刷新角色信息」。刷新成功后会重新打开角色档案并生成预览。
 
-装备详情按外观模型和变体展示参考物品。名称、图标编号、品级、装备要求、属性、染色及角色资料名称映射取自国服游戏表。项目内的精简数据记录了源文件的 SHA-256。图标像素、模型和贴图由客户端按需从官方 CDN 获取。 [国服数据表来源](https://github.com/thewakingsands/ffxiv-datamining-cn)
+装备详情按外观模型和变体展示参考物品。名称、图标编号、品级、装备要求、属性、染色、服务器名称和守护神来自 XIVAPI 的简体中文 EXD 数据。客户端内置快照供离线查询。图标像素、模型和贴图由客户端按需从官方 CDN 获取。 [XIVAPI 表格文档](https://xivapi-v2.xivcdn.com/zh-cn/docs/guides/sheets/)
+
+## 更新 EXD 数据
+
+使用 Python 3.10 或更新版本联网刷新快照，再运行 Windows 构建脚本。
+
+```powershell
+python scripts/update-character-data.py
+```
+
+生成的 `data/character/zh-cn.json.gz` 记录 XIVAPI 发布版本、字段模式和各表数据的 SHA-256。导入会校验所有表来自同一个发布版本。
