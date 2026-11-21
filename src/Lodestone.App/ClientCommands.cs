@@ -1,5 +1,7 @@
 using System.Text.Json.Serialization;
+using Lodestone.Core.Auth;
 using Lodestone.Core.Cdn;
+using Lodestone.Core.Community;
 
 namespace Lodestone.App;
 
@@ -8,12 +10,60 @@ internal sealed class ClientCommands : IDisposable
     private const string LobbyVersionSetting = "lobby-version";
     private readonly OfficialCdnClient cdn = new();
     private readonly GameVersionService versions;
+    private readonly GameCommands game;
+    private readonly CommunityBrowser browser = new();
+    private RisingStonesSession? community;
+    private GameAuthorization? communityOwner;
     private readonly object gate = new();
     private VersionOperation? active;
     private bool disposed;
 
-    internal ClientCommands() => versions = new GameVersionService(cdn,
-        Path.Combine(FileSystem.AppDataDirectory, "cdn"));
+    internal ClientCommands()
+    {
+        versions = new GameVersionService(cdn, Path.Combine(FileSystem.AppDataDirectory, "cdn"));
+        game = new GameCommands(versions, GetLobbyVersion);
+        game.SessionChanged += OnGameSessionChanged;
+    }
+
+    public Task<AreaResponse> GetGameAreas() => game.GetAreasAsync();
+    public Task<GameResponse> BeginGameLogin(string id, string mode, string account, int areaId) =>
+        game.LoginAsync(id, mode, account, areaId);
+    public Task<GameResponse> SelectServiceAccount(string id, int index) => game.SelectAsync(id, index);
+    public GameProgress? GetGameProgress(string id) => game.GetProgress(id);
+    public bool CancelGameOperation(string id) => game.Cancel(id);
+    public bool SignOutGame() => game.SignOut();
+    public CommunityStatus? GetCommunityStatus()
+    {
+        var snapshot = Volatile.Read(ref community)?.Snapshot;
+        return snapshot is null ? null : new CommunityStatus(snapshot.State, snapshot.Detail,
+            snapshot.Bindings.Select(binding => new BoundCharacter(binding.Character, binding.World)).ToArray());
+    }
+
+    public Task<bool> OpenCommunity() => MainThread.InvokeOnMainThreadAsync(browser.OpenAsync);
+
+    private void OnGameSessionChanged() => MainThread.BeginInvokeOnMainThread(() =>
+    {
+        var owner = game.CurrentAuthorization;
+        if (ReferenceEquals(owner, communityOwner))
+            return;
+        communityOwner = owner;
+        var canResume = owner?.CommunityCookies.Count > 0;
+        var session = owner is null ? null : new RisingStonesSession(owner.AccountId, canResume);
+        Volatile.Write(ref community, session);
+        browser.SetSession(session, owner?.CommunityCookies ?? []);
+        if (canResume)
+            _ = browser.OpenAsync();
+    });
+
+    internal void GetLoginResource(object? sender, WebViewWebResourceRequestedEventArgs request)
+    {
+        if (!PreviewResources.IsLocal(request.Uri) || !request.Uri.AbsolutePath.StartsWith("/_login/", StringComparison.Ordinal))
+            return;
+        request.Handled = true;
+        var content = game.OpenQr(request.Uri);
+        request.SetResponse(content is null ? 404 : 200, content is null ? "Not Found" : "OK", "image/png",
+            Task.FromResult(content));
+    }
 
     public PreviewLocation? PreparePreview(int characterId) => characterId == 1
         ? new PreviewLocation(PreviewResources.Root + "scene.json", PreviewResources.Root + "textures/")
@@ -104,6 +154,10 @@ internal sealed class ClientCommands : IDisposable
             disposed = true;
             active?.Cancellation.Cancel();
         }
+        game.SessionChanged -= OnGameSessionChanged;
+        game.Dispose();
+        Volatile.Write(ref community, null);
+        MainThread.BeginInvokeOnMainThread(() => browser.SetSession(null, []));
         cdn.Dispose();
     }
 
@@ -127,3 +181,12 @@ internal sealed record VersionStatus(
 internal sealed record VersionProgress(
     [property: JsonPropertyName("bytesRead")] long BytesRead,
     [property: JsonPropertyName("totalBytes")] long TotalBytes);
+
+internal sealed record CommunityStatus(
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("detail")] string Detail,
+    [property: JsonPropertyName("bindings")] BoundCharacter[] Bindings);
+
+internal sealed record BoundCharacter(
+    [property: JsonPropertyName("character")] string Character,
+    [property: JsonPropertyName("world")] string World);

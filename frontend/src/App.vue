@@ -2,10 +2,11 @@
 import { computed, onMounted, ref } from 'vue'
 import CharacterDetails from './CharacterDetails.vue'
 import GameVersionSettings from './GameVersionSettings.vue'
+import GameLogin from './GameLogin.vue'
 import UiIcon from './UiIcon.vue'
 import { asset, portrait, type Character } from './demo'
 
-type Screen = 'login' | 'choose' | 'profile' | 'settings'
+type Screen = 'login' | 'choose' | 'profile' | 'settings' | 'game'
 const activeKey = 'lodestone-demo-character'
 
 function read<T>(key: string, fallback: T): T {
@@ -19,8 +20,10 @@ const roster = ref<Character[]>([])
 const current = computed(() => roster.value.find(character => character.id === activeId.value))
 const cover = computed(() => roster.value[0])
 const loadError = ref('')
+const openedGame = ref(false)
 
 function go(next: Screen) {
+  if (next === 'game') openedGame.value = true
   screen.value = next
   window.scrollTo(0, 0)
 }
@@ -62,11 +65,14 @@ onMounted(async () => {
         <button v-if="current" type="button" :aria-current="screen === 'profile' ? 'page' : undefined" @click="go('profile')">
           <UiIcon name="user" :size="17" />角色主页
         </button>
+        <button v-if="current" type="button" :aria-current="screen === 'game' ? 'page' : undefined" @click="go('game')">
+          盛趣登录
+        </button>
         <button type="button" :aria-current="screen === 'settings' || screen === 'choose' ? 'page' : undefined" @click="go('settings')">
           <UiIcon name="settings" :size="17" />设置
         </button>
       </nav>
-      <span class="demo-label"><span></span>演示模式</span>
+      <span v-if="screen !== 'game'" class="demo-label"><span></span>演示模式</span>
     </div>
   </header>
 
@@ -77,7 +83,10 @@ onMounted(async () => {
       <span class="brand-mark large-mark"><UiIcon name="crystal" :size="32" /></span>
       <h1>艾欧泽亚<br>角色档案</h1>
       <p>查看角色外观、档案与装备。</p>
-      <button type="button" class="primary" :disabled="!roster.length" @click="go('choose')">进入演示</button>
+      <div class="login-actions">
+        <button type="button" class="primary" @click="go('game')">盛趣登录</button>
+        <button type="button" class="secondary" :disabled="!roster.length" @click="go('choose')">进入演示</button>
+      </div>
     </div>
     <div class="login-art" aria-hidden="true">
       <img v-if="cover" :src="portrait(cover.id)" alt="">
@@ -117,5 +126,6 @@ onMounted(async () => {
     <button v-if="current" class="secondary exit-button" type="button" @click="exitDemo">退出演示</button>
   </main>
 
-  <main v-else class="error-screen" role="status">正在载入角色…</main>
+  <main v-else-if="screen !== 'game'" class="error-screen" role="status">正在载入角色…</main>
+  <GameLogin v-if="openedGame" v-show="screen === 'game'" @back="go('login')" />
 </template>

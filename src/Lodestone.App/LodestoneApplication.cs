@@ -10,6 +10,7 @@ public sealed class LodestoneApplication : Application
         var commands = new ClientCommands();
         view.SetInvokeJavaScriptTarget(commands);
         view.WebResourceRequested += PreviewResources.Respond;
+        view.WebResourceRequested += commands.GetLoginResource;
         view.HandlerChanged += OnHandlerChanged;
 
         var window = new Window(new ContentPage { Content = view })

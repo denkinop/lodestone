@@ -14,6 +14,42 @@ export interface VersionProgress {
   totalBytes: number
 }
 
+export interface GameArea {
+  id: number
+  name: string
+}
+
+export interface GameProgress {
+  status: string
+  number: string | null
+  qr: string | null
+}
+
+export interface GameCharacter {
+  id: string
+  name: string
+  area: string
+  homeWorld: string
+  currentWorld: string
+  race: string | null
+  gender: string | null
+  detailError: string | null
+  gear: { slot: string; model: number; modelType: number; variant: number; stain1: number; stain2: number }[]
+}
+
+export interface GameResponse {
+  selectedIndex: number | null
+  accounts: { index: number; name: string }[]
+  characters: GameCharacter[]
+  error: string | null
+}
+
+export interface CommunityStatus {
+  state: string
+  detail: string
+  bindings: { character: string; world: string }[]
+}
+
 declare global {
   interface Window {
     HybridWebView?: {
@@ -32,6 +68,16 @@ export const setLobbyVersion = (value: number) => invokeClient<boolean>('SetLobb
 export const refreshGameVersion = (id: string) => invokeClient<VersionStatus>('RefreshGameVersion', [id])
 export const getGameVersionProgress = (id: string) => invokeClient<VersionProgress | null>('GetGameVersionProgress', [id])
 export const cancelGameVersion = (id: string) => invokeClient<boolean>('CancelGameVersion', [id])
+export const getGameAreas = () => invokeClient<{ areas: GameArea[]; error: string | null }>('GetGameAreas')
+export const beginGameLogin = (id: string, mode: 'phone' | 'scan', account: string, areaId: number) =>
+  invokeClient<GameResponse>('BeginGameLogin', [id, mode, account, areaId])
+export const selectServiceAccount = (id: string, index: number) =>
+  invokeClient<GameResponse>('SelectServiceAccount', [id, index])
+export const getGameProgress = (id: string) => invokeClient<GameProgress | null>('GetGameProgress', [id])
+export const cancelGameOperation = (id: string) => invokeClient<boolean>('CancelGameOperation', [id])
+export const signOutGame = () => invokeClient<boolean>('SignOutGame')
+export const getCommunityStatus = () => invokeClient<CommunityStatus | null>('GetCommunityStatus')
+export const openCommunity = () => invokeClient<boolean>('OpenCommunity')
 
 export async function preparePreview(characterId: number) {
   try {

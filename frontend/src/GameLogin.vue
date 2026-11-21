@@ -1,0 +1,259 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import {
+  beginGameLogin, cancelGameOperation, getCommunityStatus, getGameAreas, getGameProgress,
+  openCommunity, selectServiceAccount, signOutGame,
+  type CommunityStatus, type GameArea, type GameProgress, type GameResponse,
+} from './bridge'
+
+const emit = defineEmits<{ back: [] }>()
+const mode = ref<'phone' | 'scan'>('phone')
+const account = ref('')
+const areas = ref<GameArea[]>([])
+const area = ref<number>()
+const active = ref<string>()
+const progress = ref<GameProgress>()
+const error = ref('')
+const cancelling = ref(false)
+const loadingAreas = ref(false)
+const roster = ref<GameResponse>()
+const community = ref<CommunityStatus>()
+const characterId = ref<string>()
+const character = computed(() => roster.value?.characters.find(item => item.id === characterId.value))
+const slotNames: Record<string, string> = {
+  main_hand: '主手', off_hand: '副手', head: '头部', body: '身体', hands: '手部', legs: '腿部',
+  feet: '脚部', ears: '耳饰', neck: '项链', wrists: '手镯', right_ring: '右戒指', left_ring: '左戒指',
+}
+let poll: ReturnType<typeof setTimeout> | undefined
+let communityPoll: ReturnType<typeof setTimeout> | undefined
+let communityGeneration = 0
+
+async function loadAreas() {
+  if (loadingAreas.value) return
+  loadingAreas.value = true
+  error.value = ''
+  try {
+    const result = await getGameAreas()
+    if (result.error) error.value = result.error
+    areas.value = result.areas
+    if (!areas.value.some(option => option.id === area.value)) area.value = undefined
+  } catch {
+    error.value = '无法加载官方大区列表'
+  } finally {
+    loadingAreas.value = false
+  }
+}
+
+function schedule(id: string) {
+  poll = setTimeout(async () => {
+    try {
+      const value = await getGameProgress(id)
+      if (active.value === id && value) progress.value = value
+    } catch {
+      // The operation response reports success or failure.
+    }
+    if (active.value === id) schedule(id)
+  }, 300)
+}
+
+async function run(operation: (id: string) => Promise<GameResponse>, status: string) {
+  if (active.value) return
+  error.value = ''
+  const id = crypto.randomUUID()
+  active.value = id
+  progress.value = { status, number: null, qr: null }
+  schedule(id)
+  try {
+    const result = await operation(id)
+    if (active.value !== id) return
+    if (result.error) error.value = result.error
+    else {
+      roster.value = result
+      characterId.value = result.characters[0]?.id
+      if (!communityPoll) void refreshCommunity(communityGeneration)
+    }
+  } catch {
+    if (active.value === id) error.value = '无法完成请求，请稍后重试'
+  } finally {
+    if (active.value === id) clearOperation()
+  }
+}
+
+async function refreshCommunity(generation: number) {
+  try {
+    const state = await getCommunityStatus()
+    if (generation === communityGeneration && state) community.value = state
+  } catch {
+    // A community status request is independent of the game roster.
+  }
+  if (generation === communityGeneration && roster.value)
+    communityPoll = setTimeout(() => refreshCommunity(generation), 1500)
+}
+
+async function showCommunity() {
+  try {
+    if (await openCommunity()) return
+  } catch {
+    // Keep the authenticated game session available.
+  }
+  community.value = { state: 'failed', detail: '无法打开石之家官方确认窗口', bindings: [] }
+}
+
+function clearCommunity() {
+  communityGeneration++
+  clearTimeout(communityPoll)
+  communityPoll = undefined
+  community.value = undefined
+}
+
+function clearOperation() {
+  clearTimeout(poll)
+  active.value = undefined
+  progress.value = undefined
+  cancelling.value = false
+}
+
+function login() {
+  const selectedArea = area.value
+  const loginMode = mode.value
+  const enteredAccount = loginMode === 'phone' ? account.value.trim() : ''
+  if (selectedArea !== undefined) {
+    roster.value = undefined
+    characterId.value = undefined
+    void run(id => beginGameLogin(id, loginMode, enteredAccount, selectedArea), '正在连接盛趣')
+  }
+}
+
+function choose(index: number) {
+  void run(id => selectServiceAccount(id, index), '正在读取角色列表')
+}
+
+async function cancel() {
+  const id = active.value
+  if (!id || cancelling.value) return
+  cancelling.value = true
+  try {
+    await cancelGameOperation(id)
+  } catch {
+    if (active.value === id) {
+      cancelling.value = false
+      error.value = '无法取消当前请求'
+    }
+  }
+}
+
+async function logout() {
+  clearOperation()
+  clearCommunity()
+  roster.value = undefined
+  characterId.value = undefined
+  account.value = ''
+  error.value = ''
+  try {
+    await signOutGame()
+  } catch {
+    error.value = '无法确认游戏会话已清理'
+  }
+}
+
+onMounted(loadAreas)
+onBeforeUnmount(() => {
+  clearOperation()
+  clearCommunity()
+  void signOutGame().catch(() => {})
+})
+</script>
+
+<template>
+  <main class="narrow-page game-page">
+    <div class="page-heading">
+      <div><h1>{{ roster ? '国服角色档案' : '盛趣登录' }}</h1></div>
+      <button class="secondary" type="button" @click="emit('back')">返回</button>
+    </div>
+    <section v-if="roster" class="paper settings-panel game-community" aria-labelledby="community-title">
+      <h2 id="community-title">石之家</h2>
+      <p role="status">{{ community?.detail ?? '正在准备社区会话' }}</p>
+      <ul v-if="community?.bindings.length">
+        <li v-for="(binding, index) in community.bindings" :key="index">{{ binding.character }} · {{ binding.world }}</li>
+      </ul>
+      <button type="button" class="secondary" @click="showCommunity">打开官方确认窗口</button>
+    </section>
+    <section v-if="!roster" class="paper settings-panel" aria-label="游戏登录">
+      <form class="game-form" @submit.prevent="login">
+        <label for="game-area">大区</label>
+        <select id="game-area" v-model="area" :disabled="Boolean(active) || loadingAreas" required>
+          <option :value="undefined" disabled>{{ loadingAreas ? '正在读取大区…' : '请选择大区' }}</option>
+          <option v-for="option in areas" :key="option.id" :value="option.id">{{ option.name }}</option>
+        </select>
+        <button v-if="!areas.length && !loadingAreas" class="secondary" type="button" @click="loadAreas">重新读取大区</button>
+        <label for="login-mode">登录方式</label>
+        <select id="login-mode" v-model="mode" :disabled="Boolean(active)">
+          <option value="phone">叨鱼确认</option>
+          <option value="scan">二维码</option>
+        </select>
+        <label v-if="mode === 'phone'" for="sdo-account">盛趣账号</label>
+        <input v-if="mode === 'phone'" id="sdo-account" v-model="account" :disabled="Boolean(active)" autocomplete="off" maxlength="128" required>
+        <button class="primary" type="submit" :disabled="Boolean(active) || area === undefined">
+          {{ mode === 'phone' ? '发送确认' : '获取二维码' }}
+        </button>
+        <p>石之家可使用盛趣授权的会话，额外确认时可在角色页继续。</p>
+      </form>
+    </section>
+    <section v-else class="paper settings-panel" aria-label="游戏角色">
+      <div class="game-actions">
+        <button class="secondary" type="button" @click="logout">退出游戏登录</button>
+        <label v-if="roster.accounts.length" for="service-account">服务账号</label>
+        <select v-if="roster.accounts.length" id="service-account" :value="roster.selectedIndex ?? ''" :disabled="Boolean(active)"
+          @change="choose(Number(($event.target as HTMLSelectElement).value))">
+          <option value="" disabled>请选择服务账号</option>
+          <option v-for="entry in roster.accounts" :key="entry.index" :value="entry.index">{{ entry.name || '服务账号 ' + (entry.index + 1) }}</option>
+        </select>
+      </div>
+      <p v-if="!roster.accounts.length">此大区没有可用的服务账号。</p>
+      <p v-else-if="roster.selectedIndex !== null && !roster.characters.length">所选服务账号没有角色。</p>
+      <div v-if="roster.characters.length" class="game-characters">
+        <button v-for="item in roster.characters" :key="item.id" class="secondary" type="button"
+          :aria-pressed="item.id === characterId" @click="characterId = item.id">{{ item.name }} · {{ item.homeWorld }}</button>
+      </div>
+      <section v-if="character" class="game-character">
+        <h2>{{ character.name }}</h2>
+        <dl class="detail-grid">
+          <div><dt>大区</dt><dd>{{ character.area }}</dd></div>
+          <div><dt>所属服务器</dt><dd>{{ character.homeWorld }}</dd></div>
+          <div><dt>当前服务器</dt><dd>{{ character.currentWorld }}</dd></div>
+          <div><dt>种族</dt><dd>{{ character.race ?? '未获取' }}</dd></div>
+          <div><dt>性别</dt><dd>{{ character.gender ?? '未获取' }}</dd></div>
+        </dl>
+        <p v-if="character.detailError" role="status">{{ character.detailError }}</p>
+        <table v-if="character.gear.length" class="game-gear">
+          <thead><tr><th scope="col">部位</th><th scope="col">模型</th><th scope="col">变体</th><th scope="col">染色</th></tr></thead>
+          <tbody><tr v-for="item in character.gear" :key="item.slot">
+            <th scope="row">{{ slotNames[item.slot] || item.slot }}</th>
+            <td>{{ item.model }}<template v-if="item.modelType"> / {{ item.modelType }}</template></td>
+            <td>{{ item.variant }}</td><td>{{ item.stain1 || '—' }} / {{ item.stain2 || '—' }}</td>
+          </tr></tbody>
+        </table>
+      </section>
+    </section>
+    <div v-if="progress" class="paper settings-panel game-progress" role="status">
+      <p>{{ progress.status }}<strong v-if="progress.number"> · 确认编号 {{ progress.number }}</strong></p>
+      <img v-if="progress.qr" :src="progress.qr" width="120" height="120" alt="叨鱼登录二维码">
+      <button class="secondary" type="button" :disabled="cancelling" @click="cancel">取消</button>
+    </div>
+    <p v-if="error" class="game-error" role="alert">{{ error }}</p>
+  </main>
+</template>
+
+<style scoped>
+.game-form { display: grid; gap: 10px; justify-items: start; }
+.game-form input, .game-page select { min-width: 12rem; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; }
+.game-actions, .game-characters { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.game-characters, .game-character, .game-progress, .game-error { margin-top: 16px; }
+.game-progress img { display: block; margin-block: 8px; image-rendering: pixelated; }
+.game-progress button { margin-top: 8px; }
+.game-gear { width: 100%; margin-top: 16px; border-collapse: collapse; }
+.game-gear th, .game-gear td { padding: .4rem; border-bottom: 1px solid var(--line); text-align: left; }
+.game-error { color: #a12f28; }
+.game-community { margin-bottom: 16px; }
+.game-community p { margin-block: 8px; }
+</style>

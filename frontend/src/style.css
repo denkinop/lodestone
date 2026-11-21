@@ -419,6 +419,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .large-mark { width: 60px; height: 60px; color: #d6e7ff; background: #e8f2ff1b; border: 1px solid #a8ccff7a; margin-bottom: 20px; }
 .login-copy h1 { font: 700 clamp(2.6rem, 6vw, 4.8rem)/1.12 var(--heading); letter-spacing: .08em; }
 .login-copy p { margin: 20px 0 28px; color: #dce9fd; font-size: 1rem; }
+.login-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .landing .primary { background: #e5efff; color: var(--navy); min-width: 135px; }
 .landing .primary:hover { background: #f4f8ff; }
 .login-art { position: absolute; right: 0; top: 0; bottom: 0; width: 62%; display: grid; place-items: center; }
