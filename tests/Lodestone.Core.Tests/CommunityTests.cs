@@ -54,12 +54,30 @@ public sealed class CommunityTests
         Assert.Empty(session.Snapshot.Bindings);
     }
 
+    [Fact]
+    public void OfficialPageCanDisplayTheCurrentRoleAfterTheCommunityAccountIsVerified()
+    {
+        var session = new RisingStonesSession("9999999999001");
+        var role = """{"code":10000,"data":{"character_name":"测试角色","group_name":"示例世界"}}"""u8.ToArray();
+        session.ObserveCurrentRole(role);
+        Assert.Empty(session.Snapshot.Bindings);
+        session.ObserveLogin("""{"data":{"isLogin":true,"sndaId":"9999999999001"}}"""u8.ToArray());
+        session.ObserveCurrentRole(role);
+        session.ObserveBindings("""{"data":[]}"""u8.ToArray());
+        Assert.Equal(new CommunityBinding("测试角色", "示例世界"), Assert.Single(session.Snapshot.Bindings));
+    }
+
     [Theory]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2", "GET", true)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=1", "GET", true)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=3", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2", "POST", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2", "OPTIONS", true)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/characterBind", "GET", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getAreaAndGroupList", "GET", true)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getAreaAndGroupList", "POST", false)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo", "GET", true)]
+    [InlineData("https://apiff14risingstones.web.sdo.com/api/home/userInfo/getUserInfo?uuid=123", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com.example.org/api/home/GHome/isLogin", "GET", false)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/GHome/login", "GET", true)]
     public void CommunityApiAccessIsLimitedToTheKnownReadAndLoginEndpoints(string uri, string method, bool result) =>

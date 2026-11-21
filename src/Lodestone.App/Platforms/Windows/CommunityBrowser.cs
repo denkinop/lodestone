@@ -162,7 +162,8 @@ internal sealed class CommunityBrowser
                     || !Uri.TryCreate(args.Request.Uri, UriKind.Absolute, out var uri))
                     return;
                 var login = RisingStonesSession.IsLoginStatus(uri);
-                if (args.Response.StatusCode != 200 || !login && !RisingStonesSession.IsBindingStatus(uri))
+                var currentRole = RisingStonesSession.IsCurrentRole(uri);
+                if (args.Response.StatusCode != 200 || !login && !currentRole && !RisingStonesSession.IsBindingStatus(uri))
                     return;
 
                 try
@@ -185,6 +186,8 @@ internal sealed class CommunityBrowser
                             await ReadOfficialEndpointAsync(core, RisingStonesSession.BindingsUrl);
                         }
                     }
+                    else if (currentRole)
+                        current.ObserveCurrentRole(bytes[..count]);
                     else
                         current.ObserveBindings(bytes[..count]);
                 }
