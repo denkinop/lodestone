@@ -33,6 +33,8 @@ export interface GameCharacter {
   currentWorld: string
   race: string | null
   gender: string | null
+  classJobId: number | null
+  level: number | null
   detailError: string | null
   gear: { slot: string; model: number; modelType: number; variant: number; stain1: number; stain2: number }[]
 }
@@ -42,6 +44,7 @@ export interface GameResponse {
   accounts: { index: number; name: string }[]
   characters: GameCharacter[]
   error: string | null
+  notice: string | null
 }
 
 export interface CommunityStatus {
@@ -69,8 +72,9 @@ export const refreshGameVersion = (id: string) => invokeClient<VersionStatus>('R
 export const getGameVersionProgress = (id: string) => invokeClient<VersionProgress | null>('GetGameVersionProgress', [id])
 export const cancelGameVersion = (id: string) => invokeClient<boolean>('CancelGameVersion', [id])
 export const getGameAreas = () => invokeClient<{ areas: GameArea[]; error: string | null }>('GetGameAreas')
-export const beginGameLogin = (id: string, mode: 'phone' | 'scan', account: string, areaId: number) =>
-  invokeClient<GameResponse>('BeginGameLogin', [id, mode, account, areaId])
+export const getSavedGameArea = () => invokeClient<number | null>('GetSavedGameArea')
+export const beginGameLogin = (id: string, mode: 'phone' | 'scan' | 'saved', account: string, areaId: number, remember: boolean) =>
+  invokeClient<GameResponse>('BeginGameLogin', [id, mode, account, areaId, remember])
 export const selectServiceAccount = (id: string, index: number) =>
   invokeClient<GameResponse>('SelectServiceAccount', [id, index])
 export const getGameProgress = (id: string) => invokeClient<GameProgress | null>('GetGameProgress', [id])

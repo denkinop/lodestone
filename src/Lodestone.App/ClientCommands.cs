@@ -26,12 +26,13 @@ internal sealed class ClientCommands : IDisposable
     }
 
     public Task<AreaResponse> GetGameAreas() => game.GetAreasAsync();
-    public Task<GameResponse> BeginGameLogin(string id, string mode, string account, int areaId) =>
-        game.LoginAsync(id, mode, account, areaId);
+    public Task<int?> GetSavedGameArea() => game.GetSavedAreaAsync();
+    public Task<GameResponse> BeginGameLogin(string id, string mode, string account, int areaId, bool remember) =>
+        game.LoginAsync(id, mode, account, areaId, remember);
     public Task<GameResponse> SelectServiceAccount(string id, int index) => game.SelectAsync(id, index);
     public GameProgress? GetGameProgress(string id) => game.GetProgress(id);
     public bool CancelGameOperation(string id) => game.Cancel(id);
-    public bool SignOutGame() => game.SignOut();
+    public Task<bool> SignOutGame() => game.SignOutAsync();
     public CommunityStatus? GetCommunityStatus()
     {
         var snapshot = Volatile.Read(ref community)?.Snapshot;

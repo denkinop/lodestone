@@ -59,6 +59,8 @@ public sealed class LobbyTests
         Assert.True(character.Appearance.Lipstick);
         Assert.True(character.Appearance.FacePaintReversed);
         Assert.Equal(5, character.Appearance.EyeShape);
+        Assert.Equal(28, character.ClassJobId);
+        Assert.Equal(91, character.Level);
         Assert.Equal(new CharacterEquipment("off_hand", 100, 200, 3, 4, 5),
             Assert.Single(character.Equipment, value => value.Slot == "off_hand"));
         Assert.Equal(new CharacterEquipment("head", 10, 0, 3, 4, 5),
@@ -123,6 +125,17 @@ public sealed class LobbyTests
         Assert.Equal(1, Assert.Single(areas).Id);
     }
 
+    [Fact]
+    public void AnUnavailableLevelDoesNotDiscardCharacterAppearance()
+    {
+        var (_, characters) = LobbyRecords.Characters(Page(true, Character(101, 0, "bad")));
+        var character = Assert.Single(characters);
+        Assert.Equal(28, character.ClassJobId);
+        Assert.Null(character.Level);
+        Assert.NotNull(character.Appearance);
+        Assert.Null(character.DetailError);
+    }
+
     private static void VerifyOutput(byte[] output, LobbyCipher cipher)
     {
         var setupLength = (int)U32(output, 24);
@@ -158,7 +171,7 @@ public sealed class LobbyTests
         return accounts;
     }
 
-    private static byte[] Character(ulong id, byte slot)
+    private static byte[] Character(ulong id, byte slot, string level = "91")
     {
         var row = new byte[1184];
         Put(row, 0, 22UL);
@@ -174,6 +187,12 @@ public sealed class LobbyTests
         var weapon = (100UL | 200UL << 16 | 3UL << 32 | 4UL << 48 | 5UL << 56).ToString(CultureInfo.InvariantCulture);
         var content = new object?[25];
         content[0] = "名字来自外观";
+        content[1] = "28";
+        var levels = new object[32];
+        Array.Fill(levels, 0);
+        levels[18] = level;
+        levels[28] = 55;
+        content[2] = levels;
         content[13] = appearance;
         content[14] = weapon;
         content[15] = weapon;

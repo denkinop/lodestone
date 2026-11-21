@@ -1,19 +1,23 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
-  beginGameLogin, cancelGameOperation, getCommunityStatus, getGameAreas, getGameProgress,
+  beginGameLogin, cancelGameOperation, getCommunityStatus, getGameAreas, getGameProgress, getSavedGameArea,
   openCommunity, selectServiceAccount, signOutGame,
   type CommunityStatus, type GameArea, type GameProgress, type GameResponse,
 } from './bridge'
+import { lobbyJobName } from './jobs'
 
 const emit = defineEmits<{ back: [] }>()
 const mode = ref<'phone' | 'scan'>('phone')
 const account = ref('')
+const remember = ref(false)
+const savedArea = ref<number | null>(null)
 const areas = ref<GameArea[]>([])
 const area = ref<number>()
 const active = ref<string>()
 const progress = ref<GameProgress>()
 const error = ref('')
+const notice = ref('')
 const cancelling = ref(false)
 const loadingAreas = ref(false)
 const roster = ref<GameResponse>()
@@ -69,6 +73,7 @@ async function run(operation: (id: string) => Promise<GameResponse>, status: str
     if (result.error) error.value = result.error
     else {
       roster.value = result
+      if (result.notice) notice.value = result.notice
       characterId.value = result.characters[0]?.id
       if (!communityPoll) void refreshCommunity(communityGeneration)
     }
@@ -118,9 +123,26 @@ function login() {
   const loginMode = mode.value
   const enteredAccount = loginMode === 'phone' ? account.value.trim() : ''
   if (selectedArea !== undefined) {
+    notice.value = ''
     roster.value = undefined
     characterId.value = undefined
-    void run(id => beginGameLogin(id, loginMode, enteredAccount, selectedArea), '正在连接盛趣')
+    void run(id => beginGameLogin(id, loginMode, enteredAccount, selectedArea, remember.value), '正在连接盛趣')
+  }
+}
+
+async function restore() {
+  const selectedArea = area.value
+  if (selectedArea === undefined || active.value || savedArea.value === null) return
+  notice.value = ''
+  await run(id => beginGameLogin(id, 'saved', '', selectedArea, false), '正在恢复盛趣登录')
+  if (!roster.value) await loadSavedArea()
+}
+
+async function loadSavedArea() {
+  try {
+    savedArea.value = await getSavedGameArea()
+  } catch {
+    savedArea.value = null
   }
 }
 
@@ -148,19 +170,28 @@ async function logout() {
   roster.value = undefined
   characterId.value = undefined
   account.value = ''
+  remember.value = false
+  savedArea.value = null
+  notice.value = ''
   error.value = ''
   try {
-    await signOutGame()
+    if (!await signOutGame()) error.value = '无法清除本机保存的登录状态'
   } catch {
     error.value = '无法确认游戏会话已清理'
   }
 }
 
-onMounted(loadAreas)
+onMounted(async () => {
+  await Promise.all([loadAreas(), loadSavedArea()])
+  if (!active.value && area.value === undefined && savedArea.value !== null
+    && areas.value.some(option => option.id === savedArea.value)) {
+    area.value = savedArea.value
+    await restore()
+  }
+})
 onBeforeUnmount(() => {
   clearOperation()
   clearCommunity()
-  void signOutGame().catch(() => {})
 })
 </script>
 
@@ -188,6 +219,10 @@ onBeforeUnmount(() => {
           <option v-for="option in areas" :key="option.id" :value="option.id">{{ option.name }}</option>
         </select>
         <button v-if="!areas.length && !loadingAreas" class="secondary" type="button" @click="loadAreas">重新读取大区</button>
+        <div v-if="savedArea !== null" class="game-actions">
+          <button class="secondary" type="button" :disabled="Boolean(active) || area === undefined" @click="restore">使用已保存登录</button>
+          <button class="secondary" type="button" :disabled="Boolean(active)" @click="logout">清除已保存登录</button>
+        </div>
         <label for="login-mode">登录方式</label>
         <select id="login-mode" v-model="mode" :disabled="Boolean(active)">
           <option value="phone">叨鱼确认</option>
@@ -195,6 +230,7 @@ onBeforeUnmount(() => {
         </select>
         <label v-if="mode === 'phone'" for="sdo-account">盛趣账号</label>
         <input v-if="mode === 'phone'" id="sdo-account" v-model="account" :disabled="Boolean(active)" autocomplete="off" maxlength="128" required>
+        <label class="game-remember"><input v-model="remember" type="checkbox" :disabled="Boolean(active)"> 在此设备保存登录状态</label>
         <button class="primary" type="submit" :disabled="Boolean(active) || area === undefined">
           {{ mode === 'phone' ? '发送确认' : '获取二维码' }}
         </button>
@@ -225,6 +261,8 @@ onBeforeUnmount(() => {
           <div><dt>当前服务器</dt><dd>{{ character.currentWorld }}</dd></div>
           <div><dt>种族</dt><dd>{{ character.race ?? '未获取' }}</dd></div>
           <div><dt>性别</dt><dd>{{ character.gender ?? '未获取' }}</dd></div>
+          <div><dt>当前职业</dt><dd>{{ lobbyJobName(character.classJobId) ?? '未获取' }}</dd></div>
+          <div><dt>当前职业等级</dt><dd>{{ character.level == null ? '未获取' : `Lv. ${character.level}` }}</dd></div>
         </dl>
         <p v-if="character.detailError" role="status">{{ character.detailError }}</p>
         <table v-if="character.gear.length" class="game-gear">
@@ -243,12 +281,14 @@ onBeforeUnmount(() => {
       <button class="secondary" type="button" :disabled="cancelling" @click="cancel">取消</button>
     </div>
     <p v-if="error" class="game-error" role="alert">{{ error }}</p>
+    <p v-if="notice" class="game-error" role="status">{{ notice }}</p>
   </main>
 </template>
 
 <style scoped>
 .game-form { display: grid; gap: 10px; justify-items: start; }
-.game-form input, .game-page select { min-width: 12rem; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; }
+.game-form input:not([type=checkbox]), .game-page select { min-width: 12rem; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; }
+.game-remember { display: flex; align-items: center; gap: .4rem; }
 .game-actions, .game-characters { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .game-characters, .game-character, .game-progress, .game-error { margin-top: 16px; }
 .game-progress img { display: block; margin-block: 8px; image-rendering: pixelated; }

@@ -28,3 +28,15 @@ export interface JobProgress {
 const names = new Map(jobGroups.flatMap(group => Array.from<Job>(group.jobs)))
 export const jobName = (id: JobId) => names.get(id) ?? id
 export const jobIcon = (id: JobId) => asset('jobs/' + id + '.png')
+
+const lobbyJobs: readonly (JobId | string | null)[] = [
+  null, '剑术师', '格斗家', '斧术师', '枪术师', '弓箭手', '幻术师', '咒术师',
+  'crp', 'bsm', 'arm', 'gsm', 'ltw', 'wvr', 'alc', 'cul', 'min', 'btn', 'fsh',
+  'pld', 'mnk', 'war', 'drg', 'brd', 'whm', 'blm', '秘术师', 'smn', 'sch', '双剑师',
+  'nin', 'mch', 'drk', 'ast', 'sam', 'rdm', 'blu', 'gnb', 'dnc', 'rpr', 'sge', 'vpr', 'pct', 'bst',
+]
+
+export function lobbyJobName(id: number | null) {
+  const job = id === null ? null : lobbyJobs[id]
+  return job ? names.get(job as JobId) ?? job : null
+}

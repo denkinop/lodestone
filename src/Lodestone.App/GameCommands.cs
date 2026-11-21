@@ -13,10 +13,12 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
     private static readonly string[] RaceNames = ["", "人族", "精灵族", "拉拉菲尔族", "猫魅族", "鲁加族", "敖龙族", "硌狮族", "维埃拉族"];
     private readonly GameAreaDirectory directory = new();
     private readonly GameLobbyClient lobby = new();
+    private readonly SavedGameLoginStore savedLogins = new();
     private readonly object gate = new();
     private Dictionary<int, GameArea> areas = [];
     private LoginOperation? operation;
     private GameSession? session;
+    private Task<bool>? signingOut;
     private bool disposed;
     internal event Action? SessionChanged;
     internal (GameAuthorization? Authorization, Task<CommunityTicketResult>? Community) CurrentAuthorization
@@ -39,21 +41,24 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         }
     }
 
-    internal async Task<GameResponse> LoginAsync(string requestId, string mode, string account, int areaId)
+    internal async Task<int?> GetSavedAreaAsync() => (await savedLogins.ReadAsync(GetInstallation()))?.AreaId;
+
+    internal async Task<GameResponse> LoginAsync(string requestId, string mode, string account, int areaId, bool remember)
     {
-        if (!Guid.TryParseExact(requestId, "D", out var id) || mode is not ("phone" or "scan"))
+        if (!Guid.TryParseExact(requestId, "D", out var id) || mode is not ("phone" or "scan" or "saved"))
             return Failed("登录请求无效");
+        var restoring = mode == "saved";
         LoginOperation current;
         GameArea area;
         lock (gate)
         {
-            if (disposed || operation is not null)
+            if (disposed || operation is not null || signingOut is { IsCompleted: false })
                 return Failed("已有操作正在处理");
             if (!areas.TryGetValue(areaId, out var selected))
                 return Failed("请选择有效大区");
             area = selected;
             ClearSession();
-            current = operation = new LoginOperation(id, "正在连接盛趣");
+            current = operation = new LoginOperation(id, restoring ? "正在恢复盛趣登录" : "正在连接盛趣");
         }
         SessionChanged?.Invoke();
 
@@ -61,7 +66,9 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         try
         {
             var token = current.Cancellation.Token;
-            auth = new SdoAuthenticator(GetInstallation());
+            var installation = GetInstallation();
+            auth = new SdoAuthenticator(installation);
+            var credentialStored = false;
             void PublishChallenge(LoginChallenge challenge)
             {
                 lock (gate)
@@ -70,9 +77,19 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                     current.Status = challenge is PhoneConfirmation ? "请在叨鱼确认登录" : "请用叨鱼扫描二维码";
                 }
             }
-            var authorization = mode == "phone"
-                ? await auth.ConfirmByPhoneAsync(account, PublishChallenge, token)
-                : await auth.ConfirmByScanAsync(PublishChallenge, token);
+            GameAuthorization authorization;
+            if (restoring)
+            {
+                var previous = await savedLogins.ReadAsync(installation) ?? throw new SavedGameLoginRejectedException();
+                authorization = await auth.RestoreAsync(previous.Login, async renewed =>
+                    credentialStored = await SaveLoginAsync(current, installation, areaId, renewed, CancellationToken.None), token);
+            }
+            else
+            {
+                authorization = mode == "phone"
+                    ? await auth.ConfirmByPhoneAsync(account, PublishChallenge, token, remember)
+                    : await auth.ConfirmByScanAsync(PublishChallenge, token, remember);
+            }
             lock (gate)
             {
                 current.Challenge = null;
@@ -80,6 +97,17 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             }
             var version = await versions.RefreshAsync(cancellationToken: token);
             var result = await lobby.ReadAsync(area, authorization, version.VersionInfo, (ushort)lobbyVersion(), null, token);
+            token.ThrowIfCancellationRequested();
+            string? notice = null;
+            if (!restoring)
+            {
+                if (authorization.SavedLogin is { } saved)
+                    credentialStored = await SaveLoginAsync(current, installation, areaId, saved, token);
+                else if (!await savedLogins.ForgetAsync())
+                    notice = "无法清除本机此前保存的登录状态";
+            }
+            if (notice is null && (remember || restoring) && !credentialStored)
+                notice = "已登录，本次未能保存登录状态";
             lock (gate)
             {
                 token.ThrowIfCancellationRequested();
@@ -87,11 +115,16 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                 auth = null;
             }
             SessionChanged?.Invoke();
-            return Present(result, area);
+            return Present(result, area) with { Notice = notice };
         }
         catch (OperationCanceledException)
         {
             return Failed("已取消登录");
+        }
+        catch (SavedGameLoginRejectedException ex)
+        {
+            var cleared = await savedLogins.ForgetAsync();
+            return Failed(cleared ? ex.Message : "保存的盛趣登录已失效，且无法清除，请重新授权");
         }
         catch (Exception ex) when (ex is SdoAuthException or LobbyException or OfficialCdnException)
         {
@@ -106,6 +139,13 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             auth?.Dispose();
             Finish(current);
         }
+    }
+
+    private Task<bool> SaveLoginAsync(LoginOperation current, Guid installation, int areaId, SavedGameLogin login,
+        CancellationToken token)
+    {
+        lock (gate)
+            return current.SignedOut ? Task.FromResult(false) : savedLogins.SaveAsync(installation, areaId, login, token);
     }
 
     internal async Task<GameResponse> SelectAsync(string requestId, int index)
@@ -166,17 +206,22 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         }
     }
 
-    internal bool SignOut()
+    internal Task<bool> SignOutAsync()
     {
+        Task<bool> forget;
         lock (gate)
         {
-            operation?.Cancellation.Cancel();
-            if (operation is not null)
-                operation.Challenge = null;
+            if (operation is { } current)
+            {
+                current.SignedOut = true;
+                current.Cancellation.Cancel();
+                current.Challenge = null;
+            }
             ClearSession();
+            forget = signingOut = savedLogins.ForgetAsync();
         }
         SessionChanged?.Invoke();
-        return true;
+        return forget;
     }
 
     private void ClearSession()
@@ -215,6 +260,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             character.ContentId, character.Name, area.Name, World(character.HomeWorld), World(character.CurrentWorld),
             Race(character.Appearance?.Race),
             character.Appearance?.Gender switch { 0 => "男", 1 => "女", _ => null },
+            character.ClassJobId, character.Level,
             character.DetailError,
             character.Equipment.Where(item => item.Model != 0).Select(item => new GameEquipment(
                 item.Slot, item.Model, item.ModelType, item.Variant, item.Stain1, item.Stain2)).ToArray())).ToArray());
@@ -229,7 +275,10 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         lock (gate)
         {
             disposed = true;
-            SignOut();
+            operation?.Cancellation.Cancel();
+            if (operation is not null)
+                operation.Challenge = null;
+            ClearSession();
         }
         directory.Dispose();
     }
@@ -240,6 +289,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         internal string Status { get; set; } = status;
         internal CancellationTokenSource Cancellation { get; } = new();
         internal LoginChallenge? Challenge { get; set; }
+        internal bool SignedOut { get; set; }
     }
 
     private sealed record GameSession(GameAuthorization Authorization, GameArea Area, string VersionInfo, CommunityAttempt Community);
@@ -285,7 +335,8 @@ internal sealed record GameResponse(
     [property: JsonPropertyName("accounts")] GameAccount[] Accounts,
     [property: JsonPropertyName("selectedIndex")] int? SelectedIndex,
     [property: JsonPropertyName("characters")] GameCharacter[] Characters,
-    [property: JsonPropertyName("error")] string? Error = null);
+    [property: JsonPropertyName("error")] string? Error = null,
+    [property: JsonPropertyName("notice")] string? Notice = null);
 
 internal sealed record GameAccount(
     [property: JsonPropertyName("index")] int Index,
@@ -299,6 +350,8 @@ internal sealed record GameCharacter(
     [property: JsonPropertyName("currentWorld")] string CurrentWorld,
     [property: JsonPropertyName("race")] string? Race,
     [property: JsonPropertyName("gender")] string? Gender,
+    [property: JsonPropertyName("classJobId")] int? ClassJobId,
+    [property: JsonPropertyName("level")] int? Level,
     [property: JsonPropertyName("detailError")] string? DetailError,
     [property: JsonPropertyName("gear")] GameEquipment[] Gear);
 

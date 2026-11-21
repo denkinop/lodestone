@@ -26,9 +26,82 @@ public sealed class SdoAuthenticationTests
             Assert.Equal("152", Assert.IsType<PhoneConfirmation>(Assert.Single(challenges)).Number);
         Assert.Equal("fake-sid", result.Sid);
         Assert.Equal("99999999999992", result.AccountId);
+        Assert.Null(result.SavedLogin);
         Assert.Empty(result.CommunityCookies);
         Assert.Equal(["getPromotionInfo.json", "ssoLogin.json"], transport.Endpoints.TakeLast(2));
         Assert.DoesNotContain("fake-sid", result.ToString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RememberingAnAuthorizedLoginUsesTheSdoSessionKey(bool scan)
+    {
+        var cookies = new CookieContainer();
+        using var transport = new CasTransport(cookies) { Remember = true };
+        using var auth = new SdoAuthenticator(Guid.NewGuid(), cookies, transport);
+        var result = scan
+            ? await auth.ConfirmByScanAsync(_ => { }, CancellationToken.None, remember: true)
+            : await auth.ConfirmByPhoneAsync("test+account@example.org", _ => { }, CancellationToken.None, remember: true);
+
+        var saved = Assert.IsType<SavedGameLogin>(result.SavedLogin);
+        Assert.Equal(result.AccountId, saved.AccountId);
+        Assert.Equal(scan ? "scan+key" : "phone+key", saved.SessionKey);
+        Assert.Equal(scan, transport.Endpoints.Contains("accountGroupLogin"));
+        Assert.DoesNotContain(saved.SessionKey, JsonSerializer.Serialize(saved));
+        Assert.DoesNotContain(saved.SessionKey, JsonSerializer.Serialize(result));
+    }
+
+    [Fact]
+    public async Task ScanLoginContinuesIfTheOptionalSavedKeyIsUnavailable()
+    {
+        var cookies = new CookieContainer();
+        using var transport = new CasTransport(cookies) { Remember = true, RejectGroup = true };
+        using var auth = new SdoAuthenticator(Guid.NewGuid(), cookies, transport);
+        var result = await auth.ConfirmByScanAsync(_ => { }, CancellationToken.None, remember: true);
+        Assert.Null(result.SavedLogin);
+        Assert.Equal("fake-sid", result.Sid);
+    }
+
+    [Fact]
+    public async Task RestoringAnAccountRotatesTheKeyBeforeCompletingGameLogin()
+    {
+        var cookies = new CookieContainer();
+        using var transport = new CasTransport(cookies);
+        using var auth = new SdoAuthenticator(Guid.NewGuid(), cookies, transport);
+        var result = await auth.RestoreAsync(new SavedGameLogin("99999999999992", "old+key&fixture"), rotated =>
+        {
+            Assert.Equal("rotated+key", rotated.SessionKey);
+            Assert.Equal(["getGuid.json", "autoLogin.json"], transport.Endpoints);
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+
+        Assert.Equal("fake-sid", result.Sid);
+        Assert.Equal("99999999999992", result.AccountId);
+        Assert.Equal(["getGuid.json", "autoLogin.json", "fastLogin.json", "getPromotionInfo.json", "ssoLogin.json"], transport.Endpoints);
+        Assert.NotNull((await result.ExchangeForCommunityAsync(CancellationToken.None)).TakeCallback());
+    }
+
+    [Theory]
+    [InlineData("expired")]
+    [InlineData("wrong-account")]
+    [InlineData("fast-wrong-account")]
+    public async Task SavedLoginRejectsExpiredOrMismatchedAccounts(string refusal)
+    {
+        var cookies = new CookieContainer();
+        using var transport = new CasTransport(cookies) { SavedRefusal = refusal };
+        using var auth = new SdoAuthenticator(Guid.NewGuid(), cookies, transport);
+        var refreshed = false;
+        await Assert.ThrowsAsync<SavedGameLoginRejectedException>(() =>
+            auth.RestoreAsync(new SavedGameLogin("99999999999992", "old+key&fixture"), _ =>
+            {
+                refreshed = true;
+                return Task.CompletedTask;
+            }, CancellationToken.None));
+
+        Assert.Equal(refusal == "fast-wrong-account", refreshed);
+        Assert.DoesNotContain("getPromotionInfo.json", transport.Endpoints);
+        Assert.DoesNotContain("ssoLogin.json", transport.Endpoints);
     }
 
     [Fact]
@@ -126,6 +199,9 @@ public sealed class SdoAuthenticationTests
         internal List<string> Endpoints { get; } = [];
         internal List<string> CommunityEndpoints { get; } = [];
         internal bool Reject { get; init; }
+        internal bool Remember { get; init; }
+        internal bool RejectGroup { get; init; }
+        internal string? SavedRefusal { get; init; }
         internal bool IssueCommunitySession { get; init; }
         internal string? Refusal { get; init; }
 
@@ -149,8 +225,21 @@ public sealed class SdoAuthenticationTests
                 Assert.Contains("inputUserId=test%2Baccount%40example.org", uri.Query);
             if (endpoint == "codeKeyLogin.json")
                 Assert.Contains("codeKey=temporary-code", uri.Query);
+            if (endpoint is "codeKeyLogin.json" or "pushMessageLogin.json")
+                Assert.Equal(Remember, uri.Query.Contains("autoLoginFlag=1&autoLoginKeepTime=30"));
+            if (endpoint == "accountGroupLogin")
+            {
+                Assert.Contains("serviceUrl=http%3A%2F%2Fwww.sdo.com", uri.Query);
+                Assert.Contains("sndaId=99999999999992", uri.Query);
+                Assert.Contains("autoLoginFlag=1&autoLoginKeepTime=30", uri.Query);
+            }
+            if (endpoint == "autoLogin.json")
+                Assert.Contains("autoLoginSessionKey=old%2Bkey%26fixture", uri.Query);
+            if (endpoint == "fastLogin.json")
+                Assert.Contains("tgt=refreshed-tgt&guid=fake-guid", uri.Query);
             if (endpoint is "getPromotionInfo.json" or "ssoLogin.json")
-                Assert.Equal("CASTGC=fake-tgt; CAS_LOGIN_STATE=1", Assert.Single(request.Headers.GetValues("Cookie")));
+                Assert.Equal(Endpoints.Contains("accountGroupLogin") && !RejectGroup ? "CASTGC=scan-tgt; CAS_LOGIN_STATE=1" :
+                    "CASTGC=fake-tgt; CAS_LOGIN_STATE=1", Assert.Single(request.Headers.GetValues("Cookie")));
             if (uri.Query.Contains("appId=6788", StringComparison.Ordinal))
             {
                 CommunityEndpoints.Add(endpoint);
@@ -189,6 +278,18 @@ public sealed class SdoAuthenticationTests
                 "getGuid.json" => """{"return_code":0,"data":{"guid":"fake-guid"}}""",
                 "sendPushMessage.json" when Reject => """{"return_code":13,"data":{"failReason":"remote-sensitive-data"}}""",
                 "sendPushMessage.json" => """{"return_code":0,"data":{"pushMsgSerialNum":"152","pushMsgSessionKey":"fake-confirm"}}""",
+                "accountGroupLogin" when RejectGroup => """{"return_code":-10515005}""",
+                "accountGroupLogin" => """{"return_code":0,"data":{"tgt":"scan-tgt","autoLoginSessionKey":"scan+key"}}""",
+                "autoLogin.json" when SavedRefusal == "expired" => """{"return_code":-10515005}""",
+                "autoLogin.json" when SavedRefusal == "wrong-account" =>
+                    """{"return_code":0,"data":{"tgt":"refreshed-tgt","sndaId":"other","autoLoginSessionKey":"rotated+key"}}""",
+                "autoLogin.json" =>
+                    """{"return_code":0,"data":{"tgt":"refreshed-tgt","sndaId":"99999999999992","autoLoginSessionKey":"rotated+key"}}""",
+                "fastLogin.json" when SavedRefusal == "fast-wrong-account" =>
+                    """{"return_code":0,"data":{"tgt":"fake-tgt","sndaId":"other"}}""",
+                "fastLogin.json" => """{"return_code":0,"data":{"tgt":"fake-tgt","sndaId":"99999999999992"}}""",
+                "pushMessageLogin.json" when Remember =>
+                    """{"return_code":0,"data":{"tgt":"fake-tgt","sndaId":"99999999999992","autoLoginSessionKey":"phone+key"}}""",
                 "pushMessageLogin.json" or "codeKeyLogin.json" =>
                     """{"return_code":0,"data":{"tgt":"fake-tgt","sndaId":"99999999999992","nextAction":0}}""",
                 "ssoLogin.json" => """{"return_code":0,"data":{"ticket":"fake-sid"}}""",

@@ -7,16 +7,27 @@ using Lodestone.Core.Community;
 namespace Lodestone.Core.Auth;
 
 public sealed class SdoAuthException(string message) : IOException(message);
+public sealed class SavedGameLoginRejectedException() : IOException("保存的盛趣登录已失效，请重新授权");
+
+public sealed class SavedGameLogin(string accountId, string sessionKey)
+{
+    public string AccountId { get; } = accountId;
+    [JsonIgnore]
+    public string SessionKey { get; } = sessionKey;
+}
 
 public sealed class GameAuthorization
 {
     private Func<CancellationToken, Task<CommunityTicketResult>>? communityExchange;
 
     internal GameAuthorization(string sid, string accountId, IReadOnlyList<CommunityLoginCookie> communityCookies,
-        Func<CancellationToken, Task<CommunityTicketResult>> communityExchange) =>
-        (Sid, AccountId, CommunityCookies, this.communityExchange) = (sid, accountId, communityCookies, communityExchange);
+        Func<CancellationToken, Task<CommunityTicketResult>> communityExchange, SavedGameLogin? savedLogin = null) =>
+        (Sid, AccountId, CommunityCookies, this.communityExchange, SavedLogin) =
+        (sid, accountId, communityCookies, communityExchange, savedLogin);
     internal string Sid { get; }
     public string AccountId { get; }
+    [JsonIgnore]
+    public SavedGameLogin? SavedLogin { get; }
     [JsonIgnore]
     public IReadOnlyList<CommunityLoginCookie> CommunityCookies { get; }
 
@@ -63,6 +74,7 @@ public sealed class SdoAuthenticator : IDisposable
         ".NET CLR 3.5.21022; .NET CLR 1.1.4322; .NET CLR 3.0.4506.2152; .NET CLR 3.5.30729)";
     private static readonly TimeSpan PollDelay = TimeSpan.FromSeconds(1);
     private static readonly byte[] PngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
+    private static readonly (string Key, string Value)[] Remember = [("autoLoginFlag", "1"), ("autoLoginKeepTime", "30")];
     private readonly HttpClient http;
     private readonly CookieContainer cookies;
     private readonly SdoIdentity identity;
@@ -90,7 +102,7 @@ public sealed class SdoAuthenticator : IDisposable
     }
 
     public async Task<GameAuthorization> ConfirmByPhoneAsync(
-        string account, Action<LoginChallenge> onChallenge, CancellationToken cancellationToken)
+        string account, Action<LoginChallenge> onChallenge, CancellationToken cancellationToken, bool remember = false)
     {
         if (string.IsNullOrWhiteSpace(account) || account.Length > 128 || account.Any(char.IsControl))
             throw new SdoAuthException("请输入有效的盛趣账号");
@@ -104,9 +116,12 @@ public sealed class SdoAuthenticator : IDisposable
         expiry.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
+            (string Key, string Value)[] fields = [("pushMsgSessionKey", key), ("guid", guid)];
             var result = await PollAsync("pushMessageLogin.json", -10516808, expiry.Token,
-                ("pushMsgSessionKey", key), ("guid", guid));
-            return await ExchangeAsync(result, guid, cancellationToken);
+                remember ? [.. fields, .. Remember] : fields);
+            var accountId = Field(result.Data, "sndaId");
+            var saved = remember ? ReadSavedLogin(result.Data, accountId) : null;
+            return await ExchangeAsync(ReadTgt(result.Data), accountId, guid, saved, cancellationToken);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -123,7 +138,8 @@ public sealed class SdoAuthenticator : IDisposable
         }
     }
 
-    public async Task<GameAuthorization> ConfirmByScanAsync(Action<LoginChallenge> onChallenge, CancellationToken cancellationToken)
+    public async Task<GameAuthorization> ConfirmByScanAsync(Action<LoginChallenge> onChallenge, CancellationToken cancellationToken,
+        bool remember = false)
     {
         var guid = await ReadGuidAsync(cancellationToken);
         using var request = Request("getCodeKey.json", null, [("maxsize", "89")]);
@@ -136,14 +152,18 @@ public sealed class SdoAuthenticator : IDisposable
         expiry.CancelAfter(TimeSpan.FromMinutes(5));
         try
         {
+            (string Key, string Value)[] fields = [("codeKey", key), ("guid", guid), ("maxsize", "97")];
             var result = await PollAsync("codeKeyLogin.json", -10515805, expiry.Token,
-                ("codeKey", key), ("guid", guid), ("maxsize", "97"));
+                remember ? [.. fields, .. Remember] : fields);
             if (result.Data.ValueKind != JsonValueKind.Object
                 || !result.Data.TryGetProperty("nextAction", out var action)
                 || !int.TryParse(action.ToString(), CultureInfo.InvariantCulture, out var nextAction)
                 || nextAction != 0)
                 throw new SdoAuthException("盛趣需要进一步确认，请使用官方登录页面完成");
-            return await ExchangeAsync(result, guid, cancellationToken);
+            var accountId = Field(result.Data, "sndaId");
+            var tgt = ReadTgt(result.Data);
+            var saved = remember ? await RememberScanAsync(tgt, accountId, cancellationToken) : null;
+            return await ExchangeAsync(saved?.Tgt ?? tgt, accountId, guid, saved?.Login, cancellationToken);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -151,19 +171,65 @@ public sealed class SdoAuthenticator : IDisposable
         }
     }
 
-    private async Task<GameAuthorization> ExchangeAsync(CasResult result, string guid, CancellationToken token)
+    private async Task<(string Tgt, SavedGameLogin Login)?> RememberScanAsync(string tgt, string accountId, CancellationToken token)
     {
-        var tgt = Field(result.Data, "tgt");
+        try
+        {
+            var result = await ReadJsonAsync("accountGroupLogin", token, null,
+                [("serviceUrl", "http://www.sdo.com"), ("tgt", tgt), ("sndaId", accountId), .. Remember]);
+            if (result.Code != 0 || RequiresConfirmation(result.Data))
+                return null;
+            if (result.Data.ValueKind == JsonValueKind.Object && result.Data.TryGetProperty("sndaId", out _)
+                && Field(result.Data, "sndaId") != accountId)
+                return null;
+            var saved = ReadSavedLogin(result.Data, accountId);
+            return saved is null ? null : (ReadTgt(result.Data), saved);
+        }
+        catch (SdoAuthException) { return null; }
+    }
+
+    public async Task<GameAuthorization> RestoreAsync(SavedGameLogin saved, Func<SavedGameLogin, Task> onRefreshed,
+        CancellationToken token)
+    {
+        var guid = await ReadGuidAsync(token);
+        var refreshed = await ReadJsonAsync("autoLogin.json", token, null, ("autoLoginSessionKey", saved.SessionKey), ("guid", guid));
+        RequireSavedAccount(refreshed, saved.AccountId);
+        var rotated = ReadSavedLogin(refreshed.Data, saved.AccountId) ?? throw new SavedGameLoginRejectedException();
+        var tgt = ReadTgt(refreshed.Data);
+        // Persist the rotated key before any further network operations that might fail.
+        await onRefreshed(rotated);
+        var signedIn = await ReadJsonAsync("fastLogin.json", token, null, ("tgt", tgt), ("guid", guid));
+        RequireSavedAccount(signedIn, saved.AccountId);
+        return await ExchangeAsync(ReadTgt(signedIn.Data), saved.AccountId, guid, rotated, token);
+    }
+
+    private static void RequireSavedAccount(CasResult result, string accountId)
+    {
+        if (result.Code != 0 || RequiresConfirmation(result.Data) || ReadField(result.Data, "sndaId") != accountId)
+            throw new SavedGameLoginRejectedException();
+    }
+
+    private static SavedGameLogin? ReadSavedLogin(JsonElement data, string accountId) =>
+        ReadField(data, "autoLoginSessionKey") is { } key ? new(accountId, key) : null;
+
+    private static string ReadTgt(JsonElement data)
+    {
+        var tgt = Field(data, "tgt");
         if (tgt.Any(value => value is <= ' ' or >= '\u007f' or ';' or ','))
             throw new SdoAuthException("盛趣响应票据格式无效");
+        return tgt;
+    }
+
+    private async Task<GameAuthorization> ExchangeAsync(string tgt, string accountId, string guid,
+        SavedGameLogin? saved, CancellationToken token)
+    {
         var promoted = await ReadJsonAsync("getPromotionInfo.json", token, tgt, ("tgt", tgt));
         RequireSuccess(promoted, "盛趣未授权游戏会话");
         var ticket = await ReadJsonAsync("ssoLogin.json", token, tgt, ("tgt", tgt), ("guid", guid));
         RequireSuccess(ticket, "无法获取游戏会话");
         var sid = Field(ticket.Data, "ticket", 64);
-        var accountId = Field(result.Data, "sndaId");
         return new GameAuthorization(sid, accountId, ScopedCommunityCookies(),
-            cancellationToken => ExchangeCommunityAsync(tgt, guid, sid, accountId, cancellationToken));
+            cancellationToken => ExchangeCommunityAsync(tgt, guid, sid, accountId, cancellationToken), saved);
     }
 
     private async Task<CommunityTicketResult> ExchangeCommunityAsync(
@@ -314,7 +380,10 @@ public sealed class SdoAuthenticator : IDisposable
             throw new SdoAuthException($"{message}（{result.Code}）");
     }
 
-    private static string Field(JsonElement data, string key, int maxLength = 2048)
+    private static string Field(JsonElement data, string key, int maxLength = 2048) =>
+        ReadField(data, key, maxLength) ?? throw new SdoAuthException("盛趣认证响应缺少必要字段");
+
+    private static string? ReadField(JsonElement data, string key, int maxLength = 2048)
     {
         if (data.ValueKind == JsonValueKind.Object && data.TryGetProperty(key, out var value))
         {
@@ -327,7 +396,7 @@ public sealed class SdoAuthenticator : IDisposable
             if (!string.IsNullOrWhiteSpace(text) && text.Length <= maxLength && !text.Any(char.IsControl))
                 return text;
         }
-        throw new SdoAuthException("盛趣认证响应缺少必要字段");
+        return null;
     }
 
     private static int Number(JsonElement value) => value.ValueKind == JsonValueKind.String

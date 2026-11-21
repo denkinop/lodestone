@@ -27,7 +27,11 @@ public sealed record CharacterAppearance(
 public sealed record LobbyCharacter(
     string ContentId, string PlayerId, byte Slot, byte Flags, string Name,
     CharacterWorld HomeWorld, CharacterWorld CurrentWorld, CharacterAppearance? Appearance,
-    IReadOnlyList<CharacterEquipment> Equipment, string? DetailError);
+    IReadOnlyList<CharacterEquipment> Equipment, string? DetailError)
+{
+    public int? ClassJobId { get; init; }
+    public int? Level { get; init; }
+}
 
 internal static class LobbyRecords
 {
@@ -35,6 +39,12 @@ internal static class LobbyRecords
     private const int CharacterHeader = 80;
     private static readonly string[] Slots =
         ["head", "body", "hands", "legs", "feet", "ears", "neck", "wrists", "left_ring", "right_ring"];
+    // ClassJob sheet ExpArrayIndex by row ID. Base classes and their jobs share a level slot.
+    private static readonly int[] LevelIndex =
+    [
+        -1, 1, 0, 2, 4, 3, 6, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+        1, 0, 2, 4, 3, 6, 5, 18, 18, 18, 19, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
+    ];
 
     internal static IReadOnlyList<ServiceAccountRecord> Accounts(ReadOnlySpan<byte> body)
     {
@@ -111,6 +121,14 @@ internal static class LobbyRecords
             if (data.GetProperty("classname").GetString() != "ClientSelectData")
                 throw new FormatException();
             var content = data.GetProperty("content");
+            if (content.ValueKind == JsonValueKind.Array && content.GetArrayLength() >= 3
+                && ReadInteger(content[1]) is > 0 and <= byte.MaxValue and var job)
+            {
+                var levels = content[2];
+                var level = job < LevelIndex.Length && levels.ValueKind == JsonValueKind.Array
+                    && LevelIndex[job] < levels.GetArrayLength() ? ReadInteger(levels[LevelIndex[job]]) : null;
+                character = character with { ClassJobId = job, Level = level is > 0 and <= byte.MaxValue ? level : null };
+            }
             var customize = content[13].EnumerateArray().Select(Number).ToArray();
             if (customize.Length < 26)
                 throw new FormatException();
@@ -149,6 +167,10 @@ internal static class LobbyRecords
 
     private static int Number(JsonElement value) => value.ValueKind == JsonValueKind.String
         ? int.Parse(value.GetString()!, CultureInfo.InvariantCulture) : value.GetInt32();
+
+    private static int? ReadInteger(JsonElement value) =>
+        value.ValueKind is JsonValueKind.Number or JsonValueKind.String
+        && int.TryParse(value.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var result) ? result : null;
 
     private static ulong WeaponValue(JsonElement value)
     {
