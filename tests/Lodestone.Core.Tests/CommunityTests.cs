@@ -40,6 +40,20 @@ public sealed class CommunityTests
         Assert.Equal("expired", session.Snapshot.State);
     }
 
+    [Fact]
+    public void APositiveStatusWithoutAnIdentityRequiresTheTicketOnlyProfile()
+    {
+        var session = new RisingStonesSession("9999999999001", reusesSession: true);
+        var positive = """{"data":true}"""u8.ToArray();
+        session.ObserveLogin(positive);
+        Assert.Equal("identity", session.Snapshot.State);
+        session.ObserveLogin(positive, ticketOnlyProfile: true);
+        Assert.Equal("connected", session.Snapshot.State);
+        session.ObserveLogin("""{"data":{"isLogin":true,"sndaId":"another-account"}}"""u8.ToArray(), ticketOnlyProfile: true);
+        Assert.Equal("identity", session.Snapshot.State);
+        Assert.Empty(session.Snapshot.Bindings);
+    }
+
     [Theory]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=2", "GET", true)]
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getCharacterBindInfo?platform=3", "GET", false)]

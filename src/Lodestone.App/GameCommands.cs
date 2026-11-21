@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json.Serialization;
 using Lodestone.Core.Auth;
 using Lodestone.Core.Cdn;
+using Lodestone.Core.Community;
 using Lodestone.Core.Lobby;
 
 namespace Lodestone.App;
@@ -18,7 +19,10 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
     private GameSession? session;
     private bool disposed;
     internal event Action? SessionChanged;
-    internal GameAuthorization? CurrentAuthorization { get { lock (gate) return session?.Authorization; } }
+    internal (GameAuthorization? Authorization, Task<CommunityTicketResult>? Community) CurrentAuthorization
+    {
+        get { lock (gate) return (session?.Authorization, session?.Community.Ticket); }
+    }
 
     internal async Task<AreaResponse> GetAreasAsync()
     {
@@ -48,15 +52,16 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             if (!areas.TryGetValue(areaId, out var selected))
                 return Failed("请选择有效大区");
             area = selected;
-            session = null;
+            ClearSession();
             current = operation = new LoginOperation(id, "正在连接盛趣");
         }
         SessionChanged?.Invoke();
 
+        SdoAuthenticator? auth = null;
         try
         {
             var token = current.Cancellation.Token;
-            using var auth = new SdoAuthenticator(GetInstallation());
+            auth = new SdoAuthenticator(GetInstallation());
             void PublishChallenge(LoginChallenge challenge)
             {
                 lock (gate)
@@ -78,7 +83,8 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             lock (gate)
             {
                 token.ThrowIfCancellationRequested();
-                session = new GameSession(authorization, area, version.VersionInfo);
+                session = new GameSession(authorization, area, version.VersionInfo, new CommunityAttempt(auth, authorization));
+                auth = null;
             }
             SessionChanged?.Invoke();
             return Present(result, area);
@@ -97,6 +103,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         }
         finally
         {
+            auth?.Dispose();
             Finish(current);
         }
     }
@@ -166,10 +173,16 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             operation?.Cancellation.Cancel();
             if (operation is not null)
                 operation.Challenge = null;
-            session = null;
+            ClearSession();
         }
         SessionChanged?.Invoke();
         return true;
+    }
+
+    private void ClearSession()
+    {
+        session?.Community.Dispose();
+        session = null;
     }
 
     private bool Matches(string requestId) =>
@@ -229,7 +242,30 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         internal LoginChallenge? Challenge { get; set; }
     }
 
-    private sealed record GameSession(GameAuthorization Authorization, GameArea Area, string VersionInfo);
+    private sealed record GameSession(GameAuthorization Authorization, GameArea Area, string VersionInfo, CommunityAttempt Community);
+
+    private sealed class CommunityAttempt : IDisposable
+    {
+        private readonly CancellationTokenSource cancellation = new();
+
+        internal CommunityAttempt(SdoAuthenticator auth, GameAuthorization owner) =>
+            Ticket = IssueAsync(auth, owner, cancellation.Token);
+
+        internal Task<CommunityTicketResult> Ticket { get; }
+
+        private static async Task<CommunityTicketResult> IssueAsync(
+            SdoAuthenticator auth, GameAuthorization owner, CancellationToken token)
+        {
+            using (auth)
+                return await owner.ExchangeForCommunityAsync(token);
+        }
+
+        public void Dispose()
+        {
+            cancellation.Cancel();
+            cancellation.Dispose();
+        }
+    }
 }
 
 internal sealed record AreaResponse(

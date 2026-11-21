@@ -43,17 +43,32 @@ internal sealed class ClientCommands : IDisposable
 
     private void OnGameSessionChanged() => MainThread.BeginInvokeOnMainThread(() =>
     {
-        var owner = game.CurrentAuthorization;
+        var (owner, exchange) = game.CurrentAuthorization;
         if (ReferenceEquals(owner, communityOwner))
             return;
         communityOwner = owner;
-        var canResume = owner?.CommunityCookies.Count > 0;
-        var session = owner is null ? null : new RisingStonesSession(owner.AccountId, canResume);
+        var session = owner is null ? null : new RisingStonesSession(owner.AccountId, reusesSession: true);
         Volatile.Write(ref community, session);
         browser.SetSession(session, owner?.CommunityCookies ?? []);
-        if (canResume)
-            _ = browser.OpenAsync();
+        if (owner is not null && session is not null && exchange is not null)
+            _ = ResumeCommunityAsync(owner, session, exchange);
     });
+
+    private async Task ResumeCommunityAsync(
+        GameAuthorization owner, RisingStonesSession session, Task<CommunityTicketResult> exchange)
+    {
+        try
+        {
+            var result = await exchange;
+            if (ReferenceEquals(game.CurrentAuthorization.Authorization, owner))
+                await browser.ResumeAsync(result.TakeCallback(), result.Code);
+        }
+        catch (OperationCanceledException)
+        {
+            if (ReferenceEquals(game.CurrentAuthorization.Authorization, owner))
+                session.RequireConfirmation();
+        }
+    }
 
     internal void GetLoginResource(object? sender, WebViewWebResourceRequestedEventArgs request)
     {

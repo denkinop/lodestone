@@ -176,7 +176,9 @@ onBeforeUnmount(() => {
       <ul v-if="community?.bindings.length">
         <li v-for="(binding, index) in community.bindings" :key="index">{{ binding.character }} · {{ binding.world }}</li>
       </ul>
-      <button type="button" class="secondary" @click="showCommunity">打开官方确认窗口</button>
+      <button type="button" class="secondary" :disabled="!community || community.state === 'starting'" @click="showCommunity">
+        {{ community?.state === 'connected' || community?.state === 'unbound' ? '查看石之家' : '打开官方确认窗口' }}
+      </button>
     </section>
     <section v-if="!roster" class="paper settings-panel" aria-label="游戏登录">
       <form class="game-form" @submit.prevent="login">
@@ -196,7 +198,7 @@ onBeforeUnmount(() => {
         <button class="primary" type="submit" :disabled="Boolean(active) || area === undefined">
           {{ mode === 'phone' ? '发送确认' : '获取二维码' }}
         </button>
-        <p>石之家可使用盛趣授权的会话，额外确认时可在角色页继续。</p>
+        <p>客户端会尝试用本次盛趣登录授权石之家，额外确认时可在角色页继续。</p>
       </form>
     </section>
     <section v-else class="paper settings-panel" aria-label="游戏角色">

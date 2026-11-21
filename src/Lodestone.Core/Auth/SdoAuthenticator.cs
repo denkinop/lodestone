@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using Lodestone.Core.Community;
 
 namespace Lodestone.Core.Auth;
 
@@ -8,11 +10,21 @@ public sealed class SdoAuthException(string message) : IOException(message);
 
 public sealed class GameAuthorization
 {
-    internal GameAuthorization(string sid, string accountId, IReadOnlyList<CommunityLoginCookie> communityCookies) =>
-        (Sid, AccountId, CommunityCookies) = (sid, accountId, communityCookies);
+    private Func<CancellationToken, Task<CommunityTicketResult>>? communityExchange;
+
+    internal GameAuthorization(string sid, string accountId, IReadOnlyList<CommunityLoginCookie> communityCookies,
+        Func<CancellationToken, Task<CommunityTicketResult>> communityExchange) =>
+        (Sid, AccountId, CommunityCookies, this.communityExchange) = (sid, accountId, communityCookies, communityExchange);
     internal string Sid { get; }
     public string AccountId { get; }
+    [JsonIgnore]
     public IReadOnlyList<CommunityLoginCookie> CommunityCookies { get; }
+
+    public Task<CommunityTicketResult> ExchangeForCommunityAsync(CancellationToken cancellationToken)
+    {
+        var exchange = Interlocked.Exchange(ref communityExchange, null);
+        return exchange is null ? Task.FromResult(new CommunityTicketResult(null)) : exchange(cancellationToken);
+    }
 }
 
 public sealed class CommunityLoginCookie
@@ -28,6 +40,7 @@ public sealed class CommunityLoginCookie
     }
 
     public string Name { get; }
+    [JsonIgnore]
     public string Value { get; }
     public string Domain { get; }
     public string Path { get; }
@@ -147,8 +160,62 @@ public sealed class SdoAuthenticator : IDisposable
         RequireSuccess(promoted, "盛趣未授权游戏会话");
         var ticket = await ReadJsonAsync("ssoLogin.json", token, tgt, ("tgt", tgt), ("guid", guid));
         RequireSuccess(ticket, "无法获取游戏会话");
-        return new GameAuthorization(Field(ticket.Data, "ticket", 64), Field(result.Data, "sndaId"),
-            ScopedCommunityCookies());
+        var sid = Field(ticket.Data, "ticket", 64);
+        var accountId = Field(result.Data, "sndaId");
+        return new GameAuthorization(sid, accountId, ScopedCommunityCookies(),
+            cancellationToken => ExchangeCommunityAsync(tgt, guid, sid, accountId, cancellationToken));
+    }
+
+    private async Task<CommunityTicketResult> ExchangeCommunityAsync(
+        string tgt, string guid, string gameSid, string accountId, CancellationToken cancellationToken)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(8));
+        var token = budget.Token;
+        var service = RisingStonesSession.ServiceUrl;
+        try
+        {
+            // The official community portal uses a separate application and a service-specific callback.
+            (string Key, string Value)[] audience = [
+                ("appId", "6788"), ("appIdSite", "6788"), ("authenSource", "2"),
+                ("productId", "2"), ("productVersion", "3.1.0"), ("serviceUrl", service),
+                ("tgt", tgt), ("guid", guid)
+            ];
+            var promotion = await ReadJsonAsync("getPromotionInfo.json", token, tgt, audience);
+            if (promotion.Code != 0 || RequiresConfirmation(promotion.Data))
+                return new CommunityTicketResult(null, promotion.Code == 0 ? null : promotion.Code);
+
+            var issued = await ReadJsonAsync("ssoLogin.json", token, tgt, audience);
+            if (issued.Code != 0 || RequiresConfirmation(issued.Data))
+                return new CommunityTicketResult(null, issued.Code == 0 ? null : issued.Code);
+
+            if (issued.Data.ValueKind == JsonValueKind.Object && issued.Data.TryGetProperty("sndaId", out _)
+                && !string.Equals(Field(issued.Data, "sndaId"), accountId, StringComparison.Ordinal))
+                return new CommunityTicketResult(null);
+            var ticket = Field(issued.Data, "ticket", 512);
+            if (ticket == gameSid || ticket == tgt || ticket.Any(character => character is < '!' or > '~'))
+                return new CommunityTicketResult(null);
+            return new CommunityTicketResult(ticket);
+        }
+        catch (SdoAuthException)
+        {
+            return new CommunityTicketResult(null);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new CommunityTicketResult(null);
+        }
+    }
+
+    private static bool RequiresConfirmation(JsonElement data)
+    {
+        if (data.ValueKind != JsonValueKind.Object)
+            return false;
+        if (data.TryGetProperty("promotionUrl", out var url) && url.ValueKind != JsonValueKind.Null
+            && (url.ValueKind != JsonValueKind.String || !string.IsNullOrWhiteSpace(url.GetString())))
+            return true;
+        return data.TryGetProperty("nextAction", out var action)
+            && (!int.TryParse(action.ToString(), CultureInfo.InvariantCulture, out var value) || value != 0);
     }
 
     private IReadOnlyList<CommunityLoginCookie> ScopedCommunityCookies()
@@ -208,7 +275,8 @@ public sealed class SdoAuthenticator : IDisposable
 
     private HttpRequestMessage Request(string endpoint, string? tgt, (string Key, string Value)[] fields)
     {
-        var query = fields.Select(field => KeyValuePair.Create(field.Key, field.Value)).Concat(common)
+        var query = fields.Select(field => KeyValuePair.Create(field.Key, field.Value))
+            .Concat(common.Where(item => !fields.Any(field => field.Key == item.Key)))
             .Select(field => Uri.EscapeDataString(field.Key) + "=" + Uri.EscapeDataString(field.Value));
         var uri = new Uri(Cas, endpoint + "?" + string.Join('&', query));
         var request = new HttpRequestMessage(HttpMethod.Get, uri);
