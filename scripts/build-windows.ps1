@@ -32,6 +32,7 @@ try {
     $project = 'src/Lodestone.App/Lodestone.App.csproj'
     Invoke-BuildCommand $Dotnet @('restore', 'Lodestone.sln', '--locked-mode')
     Invoke-BuildCommand $Dotnet @('build', 'Lodestone.sln', '--no-restore', '-c', $Configuration)
+    Invoke-BuildCommand $Dotnet @('test', 'tests/Lodestone.Core.Tests/Lodestone.Core.Tests.csproj', '--no-build', '-c', $Configuration)
     if ($Publish) {
         Invoke-BuildCommand $Dotnet @('publish', $project, '--no-restore', '-c', $Configuration)
     }

@@ -7,16 +7,19 @@ public sealed class LodestoneApplication : Application
     protected override Window CreateWindow(IActivationState? activationState)
     {
         var view = new HybridWebView();
-        view.SetInvokeJavaScriptTarget(new PreviewCommands());
+        var commands = new ClientCommands();
+        view.SetInvokeJavaScriptTarget(commands);
         view.WebResourceRequested += PreviewResources.Respond;
         view.HandlerChanged += OnHandlerChanged;
 
-        return new Window(new ContentPage { Content = view })
+        var window = new Window(new ContentPage { Content = view })
         {
             Title = "Lodestone · 艾欧泽亚档案",
             Width = 1280,
             Height = 900
         };
+        window.Destroying += (_, _) => commands.Dispose();
+        return window;
     }
 
     private static void OnHandlerChanged(object? sender, EventArgs args)

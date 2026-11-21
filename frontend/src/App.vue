@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import CharacterDetails from './CharacterDetails.vue'
+import GameVersionSettings from './GameVersionSettings.vue'
 import UiIcon from './UiIcon.vue'
 import { asset, portrait, type Character } from './demo'
 
@@ -57,8 +58,8 @@ onMounted(async () => {
         <span class="brand-mark"><UiIcon name="crystal" :size="21" /></span>
         <span>艾欧泽亚档案</span>
       </button>
-      <nav v-if="current" class="app-nav" aria-label="主导航">
-        <button type="button" :aria-current="screen === 'profile' ? 'page' : undefined" @click="go('profile')">
+      <nav class="app-nav" aria-label="主导航">
+        <button v-if="current" type="button" :aria-current="screen === 'profile' ? 'page' : undefined" @click="go('profile')">
           <UiIcon name="user" :size="17" />角色主页
         </button>
         <button type="button" :aria-current="screen === 'settings' || screen === 'choose' ? 'page' : undefined" @click="go('settings')">
@@ -102,9 +103,9 @@ onMounted(async () => {
     <CharacterDetails :key="current.id" :character="current" />
   </main>
 
-  <main v-else-if="screen === 'settings' && current" class="narrow-page settings-page">
+  <main v-else-if="screen === 'settings'" class="narrow-page settings-page">
     <div class="page-heading"><div><h1>设置</h1></div></div>
-    <section class="paper settings-panel" aria-labelledby="active-character">
+    <section v-if="current" class="paper settings-panel" aria-labelledby="active-character">
       <div class="panel-title"><span class="section-icon"><UiIcon name="user" :size="18" /></span><h2 id="active-character">当前角色</h2></div>
       <div class="settings-character">
         <span class="character-avatar"><img :src="portrait(current.id, 'portrait')" alt=""></span>
@@ -112,7 +113,8 @@ onMounted(async () => {
         <button type="button" class="secondary switch-button" @click="go('choose')"><UiIcon name="swap" :size="17" />切换角色</button>
       </div>
     </section>
-    <button class="secondary exit-button" type="button" @click="exitDemo">退出演示</button>
+    <GameVersionSettings />
+    <button v-if="current" class="secondary exit-button" type="button" @click="exitDemo">退出演示</button>
   </main>
 
   <main v-else class="error-screen" role="status">正在载入角色…</main>

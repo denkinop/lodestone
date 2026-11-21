@@ -1,17 +1,4 @@
-using System.Text.Json.Serialization;
-
 namespace Lodestone.App;
-
-internal sealed class PreviewCommands
-{
-    public PreviewLocation? PreparePreview(int characterId) => characterId == 1
-        ? new PreviewLocation(PreviewResources.Root + "scene.json", PreviewResources.Root + "textures/")
-        : null;
-}
-
-internal sealed record PreviewLocation(
-    [property: JsonPropertyName("scene")] string Scene,
-    [property: JsonPropertyName("textureRoot")] string TextureRoot);
 
 internal static class PreviewResources
 {

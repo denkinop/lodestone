@@ -3,6 +3,17 @@ interface PreviewResources {
   textureRoot: string
 }
 
+export interface VersionStatus {
+  revision: string | null
+  cached: boolean
+  error: string | null
+}
+
+export interface VersionProgress {
+  bytesRead: number
+  totalBytes: number
+}
+
 declare global {
   interface Window {
     HybridWebView?: {
@@ -11,12 +22,20 @@ declare global {
   }
 }
 
+function invokeClient<T>(method: string, args: unknown[] = []) {
+  if (!window.HybridWebView) return Promise.reject(new Error('请在 Windows 客户端中打开'))
+  return window.HybridWebView.InvokeDotNet<T>(method, args)
+}
+
+export const getLobbyVersion = () => invokeClient<number>('GetLobbyVersion')
+export const setLobbyVersion = (value: number) => invokeClient<boolean>('SetLobbyVersion', [value])
+export const refreshGameVersion = (id: string) => invokeClient<VersionStatus>('RefreshGameVersion', [id])
+export const getGameVersionProgress = (id: string) => invokeClient<VersionProgress | null>('GetGameVersionProgress', [id])
+export const cancelGameVersion = (id: string) => invokeClient<boolean>('CancelGameVersion', [id])
+
 export async function preparePreview(characterId: number) {
-  if (!window.HybridWebView) throw new Error('3D 预览需要 Windows 客户端')
   try {
-    const resources = await window.HybridWebView.InvokeDotNet<PreviewResources | null>(
-      'PreparePreview', [characterId],
-    )
+    const resources = await invokeClient<PreviewResources | null>('PreparePreview', [characterId])
     if (resources) return resources
   } catch {
     throw new Error('无法连接到客户端预览服务')
