@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { icon, type Equipment } from './demo'
+import { icon, type Equipment } from './character'
 import UiIcon from './UiIcon.vue'
 
 defineProps<{ label: string; items: Equipment[]; selected: Equipment | null; iconRoot?: string }>()

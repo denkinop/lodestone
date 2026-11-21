@@ -15,16 +15,19 @@ internal sealed class CommunityBrowser
     private WebView2? webView;
     private RisingStonesSession? session;
     private IReadOnlyList<CommunityLoginCookie> federatedCookies = [];
+    private Func<SavedCommunityCookie[], Task>? saveCookies;
     private int generation;
     private Uri? jobReadUri;
     private Uri? allowedRoleChange;
     private bool selectingRole;
 
-    internal void SetSession(RisingStonesSession? replacement, IReadOnlyList<CommunityLoginCookie> cookies)
+    internal void SetSession(RisingStonesSession? replacement, IReadOnlyList<CommunityLoginCookie> cookies,
+        Func<SavedCommunityCookie[], Task>? save = null)
     {
         Close();
         session = replacement;
         federatedCookies = cookies;
+        saveCookies = save;
     }
 
     internal async Task ResumeAsync(Uri? callback, int? code)
@@ -41,6 +44,15 @@ internal sealed class CommunityBrowser
             current.RequireConfirmation(code);
     }
 
+    internal async Task ResumeSavedAsync(IReadOnlyList<SavedCommunityCookie> cookies)
+    {
+        if (session is not { } current || window is not null)
+            return;
+        if ((cookies.Count == 0 || !await OpenAsync(RisingStonesSession.Portal, ticketOnlyProfile: true, cookies))
+            && ReferenceEquals(session, current) && window is null)
+            current.RequireConfirmation();
+    }
+
     private async Task<bool> ReadJobsAsync()
     {
         if (webView?.CoreWebView2 is not { } core || session is not { } current || !InPortal(core) || !current.BeginJobRead())
@@ -53,7 +65,10 @@ internal sealed class CommunityBrowser
             if (response is null)
                 current.JobReadFailed();
             else
+            {
                 current.ObserveCurrentRole(response);
+                await SaveVerifiedCookiesAsync(core, current, revision);
+            }
         }
         return true;
     }
@@ -62,8 +77,8 @@ internal sealed class CommunityBrowser
     {
         if (webView?.CoreWebView2 is not { } core || session is not { CanSelectRole: true } current || !InPortal(core))
             return "石之家登录验证后才能切换角色。";
-        if (selectingRole)
-            return "石之家正在切换角色。";
+        if (selectingRole || current.Snapshot.JobsStatus == "loading")
+            return "石之家正在读取角色信息。";
         if (current.HasSelectedRole(target))
         {
             if (current.Snapshot.JobsStatus != "ready")
@@ -115,7 +130,7 @@ internal sealed class CommunityBrowser
         }
     }
 
-    private async Task<bool> OpenAsync(Uri entry, bool ticketOnlyProfile)
+    private async Task<bool> OpenAsync(Uri entry, bool ticketOnlyProfile, IReadOnlyList<SavedCommunityCookie>? savedCookies = null)
     {
         if (session is not { } current)
             return false;
@@ -126,8 +141,8 @@ internal sealed class CommunityBrowser
         var shell = new WinWindow { Title = "石之家 · 盛趣官方登录", Content = browser };
         window = shell;
         webView = browser;
-        bool AllowsPage(Uri uri) => RisingStonesSession.IsAllowedPage(uri)
-            && (!ticketOnlyProfile || uri.Host != "login.u.sdo.com");
+        bool AllowsPage(Uri uri) => savedCookies is not null ? RisingStonesSession.IsPortal(uri)
+            : RisingStonesSession.IsAllowedPage(uri) && (!ticketOnlyProfile || uri.Host != "login.u.sdo.com");
         shell.AppWindow.Closing += (_, args) =>
         {
             if (window == shell)
@@ -179,6 +194,19 @@ internal sealed class CommunityBrowser
                     scoped.Expires = new DateTimeOffset(expiration).ToUnixTimeSeconds();
                 core.CookieManager.AddOrUpdateCookie(scoped);
             }
+            foreach (var cookie in savedCookies ?? [])
+            {
+                var sameSite = (CoreWebView2CookieSameSiteKind)cookie.SameSite;
+                if (!cookie.IsUsable(DateTimeOffset.UtcNow) || !Enum.IsDefined(sameSite))
+                    continue;
+                var restored = core.CookieManager.CreateCookie(cookie.Name, cookie.Value, cookie.Domain, cookie.Path);
+                restored.IsSecure = true;
+                restored.IsHttpOnly = cookie.HttpOnly;
+                restored.SameSite = sameSite;
+                if (cookie.Expires is { } expires)
+                    restored.Expires = expires.ToUnixTimeSeconds();
+                core.CookieManager.AddOrUpdateCookie(restored);
+            }
             core.NewWindowRequested += (_, args) =>
             {
                 args.Handled = true;
@@ -199,6 +227,11 @@ internal sealed class CommunityBrowser
                 };
             }
             core.AddWebResourceRequestedFilter("https://apiff14risingstones.web.sdo.com/api/home/*", CoreWebView2WebResourceContext.All);
+            if (savedCookies is not null)
+            {
+                core.AddWebResourceRequestedFilter("https://login.u.sdo.com/*", CoreWebView2WebResourceContext.All);
+                core.AddWebResourceRequestedFilter("https://cas.sdo.com/*", CoreWebView2WebResourceContext.All);
+            }
             core.WebResourceRequested += (_, args) =>
             {
                 if (Uri.TryCreate(args.Request.Uri, UriKind.Absolute, out var uri))
@@ -210,7 +243,7 @@ internal sealed class CommunityBrowser
                             allowedRoleChange = null;
                         return;
                     }
-                    if (current.AllowsApiRequest(uri, args.Request.Method))
+                    if (current.AllowsApiRequest(uri, args.Request.Method, allowSignIn: savedCookies is null))
                         return;
                 }
                 args.Response = core.Environment.CreateWebResourceResponse(null, 403, "Forbidden", "");
@@ -218,6 +251,7 @@ internal sealed class CommunityBrowser
             var statusRequested = false;
             var bindingsRequested = false;
             var jobsRequested = false;
+            var cookiesSaved = false;
             core.NavigationCompleted += async (_, args) =>
             {
                 if (!args.IsSuccess || statusRequested || generation != revision || !InPortal(core))
@@ -242,6 +276,13 @@ internal sealed class CommunityBrowser
                     if (login)
                     {
                         current.ObserveLogin(bytes, ticketOnlyProfile);
+                        if (!cookiesSaved && current.CanSelectRole)
+                        {
+                            cookiesSaved = true;
+                            await SaveVerifiedCookiesAsync(core, current, revision);
+                        }
+                        if (generation != revision)
+                            return;
                         if (!bindingsRequested && current.Snapshot.State is "connected" or "unbound")
                         {
                             bindingsRequested = true;
@@ -270,6 +311,35 @@ internal sealed class CommunityBrowser
             if (generation == revision)
                 Close();
             return false;
+        }
+    }
+
+    private async Task SaveVerifiedCookiesAsync(CoreWebView2 core, RisingStonesSession current, int revision)
+    {
+        if (saveCookies is not { } save || !current.CanSelectRole)
+            return;
+        try
+        {
+            var cookies = new Dictionary<(string Host, string Path, string Name), SavedCommunityCookie>();
+            foreach (var uri in new[] { new Uri(RisingStonesSession.StatusUrl), new Uri(RisingStonesSession.ProfileUrl), RisingStonesSession.Portal })
+            {
+                var entries = await core.CookieManager.GetCookiesAsync(uri.AbsoluteUri);
+                if (generation != revision || !current.CanSelectRole)
+                    return;
+                foreach (var entry in entries)
+                {
+                    var expires = entry.IsSession ? (DateTimeOffset?)null : DateTimeOffset.FromUnixTimeSeconds((long)entry.Expires);
+                    var cookie = new SavedCommunityCookie(entry.Name, entry.Value, uri.Host, entry.Path, entry.IsHttpOnly,
+                        expires, (int)entry.SameSite);
+                    if (cookie.IsUsable(DateTimeOffset.UtcNow))
+                        cookies.TryAdd((cookie.Domain, cookie.Path, cookie.Name), cookie);
+                }
+            }
+            await save(cookies.Values.ToArray());
+        }
+        catch (Exception ex) when (ex is COMException or IOException or InvalidOperationException or ArgumentException)
+        {
+            // The verified WebView session can continue if cookies cannot be saved.
         }
     }
 

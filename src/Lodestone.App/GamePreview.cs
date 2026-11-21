@@ -170,7 +170,7 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
     internal void Respond(object? sender, WebViewWebResourceRequestedEventArgs request)
     {
         var uri = request.Uri;
-        if (!PreviewResources.IsLocal(uri) || !uri.AbsolutePath.StartsWith(Root, StringComparison.Ordinal))
+        if (!LodestoneApplication.IsLocalWebViewUri(uri) || !uri.AbsolutePath.StartsWith(Root, StringComparison.Ordinal))
             return;
         request.Handled = true;
         var parts = uri.AbsolutePath[Root.Length..].Split('/');
@@ -215,7 +215,7 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
     {
         try
         {
-            var name = $"icon-{icon}.png";
+            var name = $"icon-v2-{icon}.png";
             if (PreviewCache.ReadPng(state.Character, name) is { } cached)
                 return new MemoryStream(cached, writable: false);
             await buildLock.WaitAsync(token);

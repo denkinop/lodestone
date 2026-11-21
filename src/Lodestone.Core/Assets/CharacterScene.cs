@@ -207,7 +207,14 @@ public sealed class CharacterScene(SqPackArchive pack)
         if (id is < 1 or > 999999)
             return null;
         var directory = id / 1000 * 1000;
-        var data = await pack.ReadAsync($"ui/icon/{directory:000000}/{id:000000}.tex", token);
+        var path = FormattableString.Invariant($"ui/icon/{directory:000000}/{id:000000}");
+        try
+        {
+            if (await pack.ReadAsync(path + "_hr1.tex", token) is { } highResolution)
+                return CharacterTexture.ToPng(highResolution, false, token);
+        }
+        catch (SqPackException) { }
+        var data = await pack.ReadAsync(path + ".tex", token);
         return data is null ? null : CharacterTexture.ToPng(data, false, token);
     }
 

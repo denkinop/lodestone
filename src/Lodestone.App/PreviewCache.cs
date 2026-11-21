@@ -55,7 +55,7 @@ internal static class PreviewCache
     {
         try
         {
-            using var input = File.OpenRead(Path.Combine(character.Directory, file));
+            using var input = File.OpenRead(Path.Combine(character.Directory, PngCacheName(file)));
             if (input.Length is < 40 or > MaxPngBytes + 16)
                 return null;
             Span<byte> revision = stackalloc byte[16];
@@ -70,11 +70,18 @@ internal static class PreviewCache
     }
 
     internal static void SavePng(PreviewCharacter character, string file, byte[] png) =>
-        CharacterCache.Write(Path.Combine(character.Directory, file), output =>
+        CharacterCache.Write(Path.Combine(character.Directory, PngCacheName(file)), output =>
         {
             output.Write(character.Revision.ToByteArray());
             output.Write(png);
         });
+
+    private static string PngCacheName(string file) => file switch
+    {
+        "full.png" => "full-v2.png",
+        "portrait.png" => "portrait-v3.png",
+        _ => file
+    };
 
     internal static bool IsPng(ReadOnlySpan<byte> png) => png.Length is >= 33 and <= MaxPngBytes
         && png.StartsWith(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }) && png[12..16].SequenceEqual("IHDR"u8)

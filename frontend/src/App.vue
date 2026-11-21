@@ -1,45 +1,46 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import CharacterDetails from './CharacterDetails.vue'
 import GameVersionSettings from './GameVersionSettings.vue'
 import GameLogin from './GameLogin.vue'
 import UiIcon from './UiIcon.vue'
-import { asset, portrait, type Character } from './demo'
+import type { Character } from './character'
 import { communityJobProgress } from './jobs'
 import {
-  chooseGameCharacter, getCommunityStatus, getSavedGameArea, refreshLobby, selectCommunityCharacter,
+  chooseGameCharacter, getCommunityStatus, refreshLobby, selectCommunityCharacter,
   selectServiceAccount, signOutGame, type CommunityStatus, type GameCharacter, type GameResponse,
 } from './bridge'
 
-type Screen = 'login' | 'choose' | 'profile' | 'settings' | 'game'
-const activeKey = 'lodestone-demo-character'
-const activeId = ref<number | null>(Number(localStorage.getItem(activeKey)) || null)
-const previewPage = new URLSearchParams(location.search).get('preview') === 'profile'
-const screen = ref<Screen>(activeId.value !== null || previewPage ? 'profile' : 'login')
-const demos = ref<Character[]>([])
+type Screen = 'login' | 'choose' | 'profile' | 'settings'
+const screen = ref<Screen>('login')
 const game = ref<GameResponse>()
 const community = ref<CommunityStatus>()
-const loadError = ref('')
 const status = ref('')
 const choosing = ref(false)
 const lobbyBusy = ref(false)
+const signingOut = ref(false)
 let poll: ReturnType<typeof setTimeout> | undefined
 let generation = 0
-let attemptedRole: string | undefined
+let communityRetry: { id: string; attempts: number; after: number } | undefined
 let syncingCommunity = false
 
-const cover = computed(() => demos.value[0])
 const gameCharacter = computed(() => game.value?.current)
 const cachedProfile = computed(() => gameCharacter.value ? toProfile(gameCharacter.value) : undefined)
+const communityJobs = computed(() => {
+  const character = cachedProfile.value
+  const jobs = community.value?.jobProfile
+  if (character && jobs?.character === character.name && jobs.area === character.dc && jobs.world === character.world)
+    return communityJobProgress(jobs.levels, character.jobId)
+})
 const profile = computed(() => {
   const cached = cachedProfile.value
-  if (!cached) return demos.value.find(character => character.id === activeId.value)
-  const jobs = community.value?.jobProfile
-  const matches = jobs?.character === cached.name && jobs.area === cached.dc && jobs.world === cached.world
-  return matches ? { ...cached, jobProgress: communityJobProgress(jobs.levels, gameCharacter.value?.classJobId ?? null) } : cached
+  return cached && communityJobs.value ? { ...cached, jobProgress: communityJobs.value } : cached
 })
-const list = computed(() => game.value ? game.value.characters.map(toProfile) : demos.value)
-const profileKey = computed(() => gameCharacter.value ? gameCharacter.value.id + ':' + gameCharacter.value.revision : profile.value?.id)
+const list = computed(() => game.value?.characters.map(toProfile) ?? [])
+const profileKey = computed(() => {
+  const character = gameCharacter.value
+  return character ? `${character.id}:${character.revision}` : undefined
+})
 
 function toProfile(character: GameCharacter): Character {
   return {
@@ -57,13 +58,13 @@ function toProfile(character: GameCharacter): Character {
         magic_defense: candidate.details?.magicalDefense, attributes: candidate.details?.attributes,
       })),
     })),
-    game: { portraitRoot: character.portraitRoot, appearance: Boolean(character.race && character.gender),
-      jobId: character.classJobId, level: character.level, detailError: character.detailError },
+    portraitRoot: character.portraitRoot, appearance: Boolean(character.race && character.gender),
+    jobId: character.classJobId, level: character.level, detailError: character.detailError,
   }
 }
 
 function avatar(character: Character) {
-  return character.game ? character.game.portraitRoot + 'portrait.png' : portrait(character.id, 'portrait')
+  return character.portraitRoot + 'portrait.png'
 }
 
 function updateAvatar(event: Event) {
@@ -81,7 +82,7 @@ function authorized(result: GameResponse) {
   go(result.current ? 'profile' : 'choose')
   clearTimeout(poll)
   const current = ++generation
-  attemptedRole = undefined
+  communityRetry = undefined
   community.value = undefined
   void pollCommunity(current)
 }
@@ -92,9 +93,7 @@ async function pollCommunity(token: number) {
     if (token !== generation) return
     if (snapshot) {
       community.value = snapshot
-      const id = gameCharacter.value?.id
-      if (id && attemptedRole !== id && (snapshot.state === 'connected' || snapshot.state === 'unbound'))
-        void syncCommunity()
+      void syncCommunity()
     }
   } catch {
     // Lobby and its cached profile remain available independently.
@@ -104,41 +103,43 @@ async function pollCommunity(token: number) {
 
 async function syncCommunity() {
   const id = gameCharacter.value?.id
-  if (!id || syncingCommunity) return
+  const session = community.value
+  if (!id || syncingCommunity || communityJobs.value || session?.jobsStatus === 'loading'
+    || (session?.state !== 'connected' && session?.state !== 'unbound')) return
+  if (communityRetry?.id !== id) communityRetry = { id, attempts: 0, after: 0 }
+  const retry = communityRetry
+  if (retry.attempts >= 4 || performance.now() < retry.after) return
   const token = generation
-  attemptedRole = id
+  retry.attempts++
   syncingCommunity = true
   try {
     await selectCommunityCharacter(id)
   } catch {
     // The profile can still use cached game data when community synchronization fails.
   } finally {
-    if (token === generation) syncingCommunity = false
+    if (token === generation) {
+      retry.after = performance.now() + 1000 * 2 ** (retry.attempts - 1)
+      syncingCommunity = false
+    }
   }
 }
 
 async function choose(character: Character) {
-  if (!game.value) {
-    activeId.value = Number(character.id)
-    localStorage.setItem(activeKey, JSON.stringify(character.id))
-    go('profile')
-    return
-  }
-  if (choosing.value || lobbyBusy.value) return
+  if (choosing.value || lobbyBusy.value || signingOut.value) return
   const token = generation
   choosing.value = true
   status.value = ''
   try {
-    const result = await chooseGameCharacter(String(character.id))
+    const result = await chooseGameCharacter(character.id)
     if (token !== generation) return
     if (result.error || !result.current) {
       status.value = result.error ?? '无法选择角色'
       return
     }
     game.value = result
-    attemptedRole = undefined
+    communityRetry = undefined
     go('profile')
-    if (community.value?.state === 'connected' || community.value?.state === 'unbound') void syncCommunity()
+    void syncCommunity()
   } catch {
     if (token === generation) status.value = '无法选择角色'
   } finally {
@@ -147,7 +148,7 @@ async function choose(character: Character) {
 }
 
 async function readLobby(index: number, refresh: boolean) {
-  if (lobbyBusy.value || choosing.value) return
+  if (lobbyBusy.value || choosing.value || signingOut.value) return
   const token = generation
   lobbyBusy.value = true
   status.value = ''
@@ -169,61 +170,41 @@ async function readLobby(index: number, refresh: boolean) {
 }
 
 async function logout() {
+  if (signingOut.value) return
+  signingOut.value = true
   generation++
   clearTimeout(poll)
-  game.value = undefined
-  community.value = undefined
   syncingCommunity = false
   status.value = ''
-  go('login')
   try {
     if (!await signOutGame()) status.value = '无法清除本机保存的登录状态'
   } catch {
-    status.value = '无法确认游戏会话已清理'
+    status.value = '无法确认本机登录状态已清除'
+  } finally {
+    signingOut.value = false
+    game.value = undefined
+    community.value = undefined
+    go('login')
   }
-}
-
-function exitDemo() {
-  localStorage.removeItem(activeKey)
-  activeId.value = null
-  if (previewPage) history.replaceState(null, '', location.pathname)
-  go('login')
 }
 
 function backFromChoice() {
   status.value = ''
   if (profile.value) go('settings')
-  else if (game.value) void logout()
-  else go('login')
+  else void logout()
 }
 
-onMounted(async () => {
-  if (screen.value === 'login' && window.HybridWebView) {
-    void getSavedGameArea().then(saved => {
-      if (saved !== null && screen.value === 'login') go('game')
-    }).catch(() => {})
-  }
-  try {
-    const response = await fetch(asset('roster.json'))
-    if (!response.ok) throw new Error()
-    demos.value = await response.json() as Character[]
-    if (previewPage && !profile.value && cover.value) void choose(cover.value)
-    else if (screen.value === 'profile' && !profile.value) go('choose')
-  } catch {
-    loadError.value = '演示角色数据加载失败，请刷新页面。'
-  }
-})
 onBeforeUnmount(() => { generation++; clearTimeout(poll) })
 </script>
 
 <template>
   <header class="app-header">
     <div class="header-content">
-      <button class="brand" type="button" :aria-label="profile ? '返回角色主页' : '返回登录页'"
-        @click="go(profile ? 'profile' : game ? 'choose' : 'login')">
+      <component :is="game ? 'button' : 'div'" class="brand" :type="game ? 'button' : undefined"
+        :aria-label="profile ? '返回角色主页' : undefined" @click="game && go(profile ? 'profile' : 'choose')">
         <span class="brand-mark"><UiIcon name="crystal" :size="21" /></span>
         <span>艾欧泽亚档案</span>
-      </button>
+      </component>
       <nav v-if="profile" class="app-nav" aria-label="主导航">
         <button type="button" :aria-current="screen === 'profile' ? 'page' : undefined" @click="go('profile')">
           <UiIcon name="user" :size="17" />角色主页
@@ -232,30 +213,15 @@ onBeforeUnmount(() => { generation++; clearTimeout(poll) })
           <UiIcon name="settings" :size="17" />设置
         </button>
       </nav>
-      <span v-if="profile && !game" class="demo-label"><span></span>演示模式</span>
     </div>
   </header>
 
-  <main v-if="screen === 'login'" class="landing">
-    <div class="login-copy">
-      <span class="brand-mark large-mark"><UiIcon name="crystal" :size="32" /></span>
-      <h1>艾欧泽亚<br>角色档案</h1>
-      <p>查看角色外观、档案与装备。</p>
-      <div class="login-actions">
-        <button type="button" class="primary" @click="go('game')">盛趣登录</button>
-        <button type="button" class="secondary" :disabled="!demos.length" @click="go('choose')">进入演示</button>
-      </div>
-      <p v-if="status || loadError" role="status">{{ status || loadError }}</p>
-    </div>
-    <div class="login-art" aria-hidden="true">
-      <img v-if="cover" :src="portrait(cover.id)" alt="">
-    </div>
-  </main>
+  <GameLogin v-if="screen === 'login'" :logout-error="status" @authorized="authorized" />
 
   <main v-else-if="screen === 'choose'" class="narrow-page choose-page">
     <div class="page-heading">
       <div><h1>选择角色</h1><p>{{ list.length }} 个角色<span v-if="list[0]"> · {{ list[0].dc }}</span></p></div>
-      <button type="button" class="secondary" @click="backFromChoice">{{ profile ? '返回设置' : '返回' }}</button>
+      <button type="button" class="secondary" :disabled="signingOut" @click="backFromChoice">{{ profile ? '返回设置' : '返回登录' }}</button>
     </div>
     <div v-if="game && (game.accounts.length > 1 || !game.cached)" class="account-choice">
       <label v-if="game.accounts.length" for="service-account">服务账号</label>
@@ -275,7 +241,7 @@ onBeforeUnmount(() => { generation++; clearTimeout(poll) })
       <button v-for="character in list" :key="character.id" type="button" class="paper choose-card"
         :class="{ 'current-card': profile?.id === character.id }" :disabled="lobbyBusy || choosing" @click="choose(character)">
         <span class="character-avatar">
-          <UiIcon v-if="character.game" name="user" :size="22" />
+          <UiIcon name="user" :size="22" />
           <img :key="avatar(character)" :src="avatar(character)" alt="" hidden @load="updateAvatar" @error="updateAvatar">
         </span>
         <span><strong>{{ character.name }}</strong><small>{{ character.world }} · {{ character.race || '未获取' }}</small></span>
@@ -294,7 +260,7 @@ onBeforeUnmount(() => { generation++; clearTimeout(poll) })
       <div class="panel-title"><span class="section-icon"><UiIcon name="user" :size="18" /></span><h2 id="active-character">当前角色</h2></div>
       <div class="settings-character">
         <span class="character-avatar">
-          <UiIcon v-if="profile.game" name="user" :size="22" />
+          <UiIcon name="user" :size="22" />
           <img :key="avatar(profile)" :src="avatar(profile)" alt="" hidden @load="updateAvatar" @error="updateAvatar">
         </span>
         <div><strong>{{ profile.name }}</strong><small>{{ profile.dc }} · {{ profile.world }}</small></div>
@@ -310,11 +276,9 @@ onBeforeUnmount(() => { generation++; clearTimeout(poll) })
       </div>
     </section>
     <GameVersionSettings />
-    <button v-if="game" class="secondary exit-button" type="button" @click="logout">退出游戏登录</button>
-    <button v-else class="secondary exit-button" type="button" @click="exitDemo">退出演示</button>
+    <button class="secondary exit-button" type="button" :disabled="signingOut" @click="logout">退出登录</button>
   </main>
 
-  <GameLogin v-else-if="screen === 'game'" @back="go('login')" @authorized="authorized" />
   <main v-else class="error-screen" role="status">正在载入角色…</main>
 </template>
 

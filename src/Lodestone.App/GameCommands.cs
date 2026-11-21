@@ -23,9 +23,9 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
     private Task<bool>? signingOut;
     private bool disposed;
     internal event Action? SessionChanged;
-    internal (GameAuthorization? Authorization, Task<CommunityTicketResult>? Community) CurrentAuthorization
+    internal CommunityAccess? CurrentCommunity
     {
-        get { lock (gate) return (session?.Authorization, session?.Community.Ticket); }
+        get { lock (gate) return session?.Community; }
     }
 
     internal async Task<AreaResponse> GetAreasAsync()
@@ -49,7 +49,8 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
     {
         if (!Guid.TryParseExact(requestId, "D", out var id) || mode is not ("phone" or "scan" or "saved"))
             return Failed("登录请求无效");
-        var restoring = mode == "saved";
+        if (mode == "saved")
+            return await RestoreProfileAsync(id, areaId);
         LoginOperation current;
         GameArea area;
         lock (gate)
@@ -60,7 +61,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                 return Failed("请选择有效大区");
             area = selected;
             ClearSession();
-            current = operation = new LoginOperation(id, restoring ? "正在恢复盛趣登录" : "正在连接盛趣");
+            current = operation = new LoginOperation(id, "正在连接盛趣");
         }
         SessionChanged?.Invoke();
 
@@ -70,7 +71,6 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             var token = current.Cancellation.Token;
             var installation = GetInstallation();
             auth = new SdoAuthenticator(installation);
-            var credentialStored = false;
             void PublishChallenge(LoginChallenge challenge)
             {
                 lock (gate)
@@ -79,19 +79,9 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                     current.Status = challenge is PhoneConfirmation ? "请在叨鱼确认登录" : "请用叨鱼扫描二维码";
                 }
             }
-            GameAuthorization authorization;
-            if (restoring)
-            {
-                var previous = await savedLogins.ReadAsync(installation) ?? throw new SavedGameLoginRejectedException();
-                authorization = await auth.RestoreAsync(previous.Login, async renewed =>
-                    credentialStored = await SaveLoginAsync(current, installation, areaId, renewed, CancellationToken.None), token);
-            }
-            else
-            {
-                authorization = mode == "phone"
-                    ? await auth.ConfirmByPhoneAsync(account, PublishChallenge, token, remember)
-                    : await auth.ConfirmByScanAsync(PublishChallenge, token, remember);
-            }
+            var authorization = mode == "phone"
+                ? await auth.ConfirmByPhoneAsync(account, PublishChallenge, token, remember)
+                : await auth.ConfirmByScanAsync(PublishChallenge, token, remember);
             var directoryPath = cache.AccountPath(authorization.AccountId, areaId);
             var catalog = CharacterCache.Read(directoryPath);
             var firstRead = catalog is null;
@@ -102,14 +92,11 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             }
             token.ThrowIfCancellationRequested();
             string? notice = null;
-            if (!restoring)
-            {
-                if (authorization.SavedLogin is { } saved)
-                    credentialStored = await SaveLoginAsync(current, installation, areaId, saved, token);
-                else if (!await savedLogins.ForgetAsync())
-                    notice = "无法清除本机此前保存的登录状态";
-            }
-            if (notice is null && (remember || restoring) && !credentialStored)
+            var credentialStored = authorization.SavedLogin is { } saved
+                && await SaveLoginAsync(current, installation, areaId, area.Name, saved, token);
+            if (authorization.SavedLogin is null && !await savedLogins.ForgetAsync())
+                notice = "无法清除本机此前保存的登录状态";
+            if (notice is null && remember && !credentialStored)
                 notice = "已登录，本次未能保存登录状态";
             GameResponse response;
             lock (gate)
@@ -117,7 +104,13 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                 token.ThrowIfCancellationRequested();
                 if (firstRead)
                     CharacterCache.Save(directoryPath, catalog);
-                var next = new GameSession(authorization, area, directoryPath, new CommunityAttempt(auth, authorization), catalog);
+                var attempt = new CommunityAttempt(auth, authorization);
+                var community = new CommunityAccess(authorization.AccountId, areaId, credentialStored, authorization.CommunityCookies,
+                    [], attempt.Ticket);
+                var next = new GameSession(areaId, area.Name, directoryPath, community, catalog)
+                {
+                    Authorization = authorization, CommunityAttempt = attempt,
+                };
                 session = next;
                 response = Present(next);
                 auth = null;
@@ -128,11 +121,6 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         catch (OperationCanceledException)
         {
             return Failed("已取消登录");
-        }
-        catch (SavedGameLoginRejectedException ex)
-        {
-            var cleared = await savedLogins.ForgetAsync();
-            return Failed(cleared ? ex.Message : "保存的盛趣登录已失效，且无法清除，请重新授权");
         }
         catch (Exception ex) when (ex is SdoAuthException or LobbyException or OfficialCdnException)
         {
@@ -149,11 +137,59 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         }
     }
 
-    private Task<bool> SaveLoginAsync(LoginOperation current, Guid installation, int areaId, SavedGameLogin login,
+    private async Task<GameResponse> RestoreProfileAsync(Guid id, int areaId)
+    {
+        LoginOperation current;
+        lock (gate)
+        {
+            if (disposed || operation is not null || signingOut is { IsCompleted: false })
+                return Failed("已有操作正在处理");
+            current = operation = new LoginOperation(id, "正在读取已保存的角色档案");
+        }
+
+        try
+        {
+            var token = current.Cancellation.Token;
+            var installation = GetInstallation();
+            var saved = await savedLogins.ReadAsync(installation);
+            if (saved is null || saved.AreaId != areaId)
+                return Failed("此大区没有已保存的登录状态，请手动登录");
+            var directoryPath = cache.AccountPath(saved.Login.AccountId, areaId);
+            if (CharacterCache.Read(directoryPath) is not { } catalog)
+                return Failed("本机没有角色档案，请手动登录并选择角色");
+            var areaName = saved.AreaName;
+            if (string.IsNullOrWhiteSpace(areaName))
+                areaName = (await directory.ReadCachedAsync(token))?.FirstOrDefault(entry => entry.Id == areaId)?.Name ?? $"大区 {areaId}";
+            var cookies = await savedLogins.ReadCommunityAsync(installation, saved.Login.AccountId);
+            var community = new CommunityAccess(saved.Login.AccountId, areaId, true, [], cookies, null);
+            GameResponse response;
+            lock (gate)
+            {
+                token.ThrowIfCancellationRequested();
+                var next = new GameSession(areaId, areaName, directoryPath, community, catalog);
+                response = Present(next);
+                ClearSession();
+                session = next;
+            }
+            SessionChanged?.Invoke();
+            return response;
+        }
+        catch (OperationCanceledException) { return Failed("已取消打开角色档案"); }
+        finally { Finish(current); }
+    }
+
+    private Task<bool> SaveLoginAsync(LoginOperation current, Guid installation, int areaId, string areaName, SavedGameLogin login,
         CancellationToken token)
     {
         lock (gate)
-            return current.SignedOut ? Task.FromResult(false) : savedLogins.SaveAsync(installation, areaId, login, token);
+            return current.SignedOut ? Task.FromResult(false) : savedLogins.SaveAsync(installation, areaId, areaName, login, token);
+    }
+
+    internal Task SaveCommunityAsync(CommunityAccess owner, SavedCommunityCookie[] cookies)
+    {
+        lock (gate)
+            return owner.Remember && ReferenceEquals(session?.Community, owner)
+                ? savedLogins.SaveCommunityAsync(GetInstallation(), owner.AreaId, owner.AccountId, cookies) : Task.CompletedTask;
     }
 
     private async Task<LobbyRoster> ReadLobbyAsync(LoginOperation current, GameArea area, GameAuthorization authorization, int? index)
@@ -174,6 +210,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             return Failed("服务账号选择无效");
         LoginOperation current;
         GameSession authorized;
+        GameArea? knownArea;
         lock (gate)
         {
             if (disposed || operation is not null || session is null)
@@ -186,20 +223,25 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                 authorized.ViewIndex = index;
                 return Present(authorized);
             }
+            knownArea = areas.GetValueOrDefault(authorized.AreaId);
             current = operation = new LoginOperation(id, "正在读取角色列表");
         }
         try
         {
             var entries = await directory.GetAsync(current.Cancellation.Token, refresh: true);
-            var area = entries.FirstOrDefault(entry => entry.Id == authorized.Area.Id) ?? authorized.Area;
-            var result = await ReadLobbyAsync(current, area, authorized.Authorization, index == -1 ? null : index);
+            var area = entries.FirstOrDefault(entry => entry.Id == authorized.AreaId) ?? knownArea;
+            if (area is null)
+                return Failed("当前大区不在官方大区列表中");
+            var authorization = authorized.Authorization ?? await AuthorizeLobbyAsync(current, authorized, area);
+            var result = await ReadLobbyAsync(current, area, authorization, index == -1 ? null : index);
             var catalog = authorized.Catalog.WithRoster(result);
             lock (gate)
             {
                 current.Cancellation.Token.ThrowIfCancellationRequested();
                 CharacterCache.Save(authorized.Directory, catalog);
                 areas = entries.ToDictionary(entry => entry.Id);
-                authorized.Area = area;
+                authorized.AreaName = area.Name;
+                authorized.Authorization = authorization;
                 authorized.Catalog = catalog;
                 authorized.ViewIndex = catalog.ViewIndex;
                 return Present(authorized);
@@ -208,9 +250,24 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         catch (OperationCanceledException) { return Failed("已取消角色查询"); }
         catch (LobbyException ex) { return Failed(ex.Message); }
         catch (OfficialCdnException ex) { return Failed(ex.Message); }
+        catch (SavedGameLoginRejectedException ex) { return Failed(ex.Message); }
+        catch (SdoAuthException ex) { return Failed(ex.Message); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         { return Failed("无法写入角色缓存，已保留上次数据"); }
         finally { Finish(current); }
+    }
+
+    private async Task<GameAuthorization> AuthorizeLobbyAsync(LoginOperation current, GameSession session, GameArea area)
+    {
+        var installation = GetInstallation();
+        var saved = await savedLogins.ReadAsync(installation);
+        if (saved is null || saved.AreaId != area.Id || saved.Login.AccountId != session.Community.AccountId)
+            throw new SavedGameLoginRejectedException();
+        using var auth = new SdoAuthenticator(installation);
+        return await auth.RestoreAsync(saved.Login, async renewed =>
+        {
+            await SaveLoginAsync(current, installation, area.Id, area.Name, renewed, CancellationToken.None);
+        }, current.Cancellation.Token);
     }
 
     internal GameResponse ChooseCharacter(string id)
@@ -228,7 +285,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         }
     }
 
-    internal (GameAuthorization Authorization, CommunityCharacter Character)? FindCommunityCharacter(string contentId)
+    internal (CommunityAccess Owner, CommunityCharacter Character)? FindCommunityCharacter(string contentId)
     {
         lock (gate)
         {
@@ -237,7 +294,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             var character = Preview(active, contentId)?.Character;
             var world = character is null ? null : KnownWorld(character.HomeWorld);
             return character is not null && world is not null
-                ? (active.Authorization, new CommunityCharacter(character.Name, active.Area.Name, world)) : null;
+                ? (active.Community, new CommunityCharacter(character.Name, active.AreaName, world)) : null;
         }
     }
 
@@ -310,7 +367,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
 
     private void ClearSession()
     {
-        session?.Community.Dispose();
+        session?.CommunityAttempt?.Dispose();
         session = null;
     }
 
@@ -344,15 +401,15 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         var index = session.ViewIndex;
         var roster = index is { } selected ? catalog.Rosters.GetValueOrDefault(selected) : null;
         return new(catalog.Accounts.Select(account => new GameAccount(account.Index, account.Name)).ToArray(), index,
-            roster?.Characters.Select(character => Present(Preview(session, character.ContentId)!, session.Area)).ToArray() ?? [],
-            Current: current is null ? null : Present(current, session.Area), Cached: roster is not null,
+            roster?.Characters.Select(character => Present(Preview(session, character.ContentId)!, session.AreaName)).ToArray() ?? [],
+            Current: current is null ? null : Present(current, session.AreaName), Cached: roster is not null,
             CurrentIndex: catalog.Choice?.Index);
     }
 
-    private static GameCharacter Present(PreviewCharacter entry, GameArea area)
+    private static GameCharacter Present(PreviewCharacter entry, string areaName)
     {
         var character = entry.Character;
-        return new(character.ContentId, character.Name, area.Name, World(character.HomeWorld), World(character.CurrentWorld),
+        return new(character.ContentId, character.Name, areaName, World(character.HomeWorld), World(character.CurrentWorld),
             Race(character.Appearance?.Race), character.Appearance?.Gender switch { 0 => "男", 1 => "女", _ => null },
             character.ClassJobId, character.Level, character.DetailError,
             CharacterScene.DescribeGear(character.Equipment), CharacterData.GetTribeName(character.Appearance?.Tribe),
@@ -390,14 +447,16 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         internal bool SignedOut { get; set; }
     }
 
-    private sealed class GameSession(GameAuthorization authorization, GameArea area, string directory, CommunityAttempt community,
+    private sealed class GameSession(int areaId, string areaName, string directory, CommunityAccess community,
         CachedCatalog catalog)
     {
         internal Guid Id { get; } = Guid.NewGuid();
-        internal GameAuthorization Authorization { get; } = authorization;
-        internal GameArea Area { get; set; } = area;
+        internal GameAuthorization? Authorization { get; set; }
+        internal int AreaId { get; } = areaId;
+        internal string AreaName { get; set; } = areaName;
         internal string Directory { get; } = directory;
-        internal CommunityAttempt Community { get; } = community;
+        internal CommunityAccess Community { get; } = community;
+        internal CommunityAttempt? CommunityAttempt { get; init; }
         internal CachedCatalog Catalog { get; set; } = catalog;
         internal int? ViewIndex { get; set; } = catalog.Choice?.Index ?? catalog.ViewIndex;
     }
@@ -425,6 +484,9 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         }
     }
 }
+
+internal sealed record CommunityAccess(string AccountId, int AreaId, bool Remember, IReadOnlyList<CommunityLoginCookie> FederatedCookies,
+    IReadOnlyList<SavedCommunityCookie> SavedCookies, Task<CommunityTicketResult>? Ticket);
 
 internal sealed record AreaResponse(
     [property: JsonPropertyName("areas")] AreaOption[] Areas,

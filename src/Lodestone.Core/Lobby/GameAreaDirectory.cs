@@ -24,16 +24,8 @@ public sealed partial class GameAreaDirectory(string? cacheFile = null) : IDispo
 
     public async Task<IReadOnlyList<GameArea>> GetAsync(CancellationToken cancellationToken = default, bool refresh = false)
     {
-        if (!refresh && cacheFile is not null)
-        {
-            try
-            {
-                if (new FileInfo(cacheFile) is { Exists: true, Length: <= 65536 })
-                    return Parse(await File.ReadAllTextAsync(cacheFile, cancellationToken));
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or FormatException
-                or KeyNotFoundException or InvalidOperationException) { }
-        }
+        if (!refresh && await ReadCachedAsync(cancellationToken) is { } cached)
+            return cached;
         try
         {
             var script = await http.GetStringAsync(DirectoryUri, cancellationToken);
@@ -54,6 +46,18 @@ public sealed partial class GameAreaDirectory(string? cacheFile = null) : IDispo
         {
             throw new LobbyException("无法读取官方大区目录");
         }
+    }
+
+    public async Task<IReadOnlyList<GameArea>?> ReadCachedAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (cacheFile is not null && new FileInfo(cacheFile) is { Exists: true, Length: <= 65536 })
+                return Parse(await File.ReadAllTextAsync(cacheFile, cancellationToken));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or FormatException
+            or KeyNotFoundException or InvalidOperationException) { }
+        return null;
     }
 
     internal static IReadOnlyList<GameArea> Parse(string value)

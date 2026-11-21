@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { prepareGamePreview, preparePreview, releaseGamePreview, saveGamePortrait, type GameGear } from './bridge'
-import { asset, portrait, type Character } from './demo'
+import { prepareGamePreview, releaseGamePreview, saveGamePortrait, type GameGear } from './bridge'
+import type { Character } from './character'
 import { jobIcon, jobName, lobbyJobIcon, lobbyJobName } from './jobs'
 import { portraitPng } from './portrait-export'
 import UiIcon from './UiIcon.vue'
@@ -21,18 +21,16 @@ const exporting = ref(false)
 const message = ref('')
 const loadedSlots = ref<string[]>([])
 const hideHelmet = ref(true)
-const aetherBackground = computed(() => asset(props.character.game ? 'export-background.jpg' : 'export-background.png'))
+const aetherBackground = import.meta.env.BASE_URL + 'images/portrait-background.jpg'
 const portraits = ref<Partial<Record<View, string>>>({})
-const staticPortrait = computed(() => props.character.game
-  ? portraits.value[view.value] : portrait(props.character.id, view.value))
+const staticPortrait = computed(() => portraits.value[view.value])
 const currentJob = computed(() => {
-  const { game, jobProgress } = props.character
+  const { jobProgress, jobId, level } = props.character
   if (jobProgress?.current) {
     const id = jobProgress.current
-    return { name: jobName(id), level: jobProgress.levels[id] ?? game?.level, demo: jobProgress.source === 'demo', icon: jobIcon(id) }
+    return { name: jobName(id), level: jobProgress.levels[id] ?? level, icon: jobIcon(id) }
   }
-  if (game) return { name: lobbyJobName(game.jobId), level: game.level, demo: false, icon: lobbyJobIcon(game.jobId) }
-  return null
+  return { name: lobbyJobName(jobId), level, icon: lobbyJobIcon(jobId) }
 })
 let viewer: Viewer | undefined
 let request: AbortController | undefined
@@ -67,7 +65,7 @@ function prepareGame() {
   if (prepared) return prepared
   const id = crypto.randomUUID()
   nativeRequest = id
-  prepared = prepareGamePreview(String(props.character.id), id).catch(error => {
+  prepared = prepareGamePreview(props.character.id, id).catch(error => {
     if (nativeRequest === id) {
       nativeRequest = undefined
       prepared = undefined
@@ -78,8 +76,8 @@ function prepareGame() {
 }
 
 async function renderPortraits() {
-  const game = props.character.game
-  if (!game?.appearance) return
+  const { appearance, portraitRoot } = props.character
+  if (!appearance) return
   const signal = lifetime.signal
   capturing.value = true
   message.value = ''
@@ -88,7 +86,7 @@ async function renderPortraits() {
     const resources = await prepareGame()
     if (signal.aborted) return
     for (const mode of ['full', 'portrait'] as const)
-      if (resources[mode]) portraits.value[mode] = game.portraitRoot + mode + '.png'
+      if (resources[mode]) portraits.value[mode] = portraitRoot + mode + '.png'
     const scene = await loadScene(resources, signal)
     if (signal.aborted) return
     loadedSlots.value = scene.gear.filter((item: GameGear) => item.loaded).map((item: GameGear) => item.slot)
@@ -106,7 +104,7 @@ async function renderPortraits() {
       captureViewer.render()
       const png = captureViewer.canvas.toDataURL('image/png')
       const saved = await saveGamePortrait(nativeRequest, mode, png).catch(() => false)
-      if (!signal.aborted) portraits.value[mode] = saved ? game.portraitRoot + mode + '.png' : png
+      if (!signal.aborted) portraits.value[mode] = saved ? portraitRoot + mode + '.png' : png
     }
   } catch (error) {
     if (!signal.aborted) message.value = error instanceof Error ? error.message : '无法生成角色图片'
@@ -131,7 +129,7 @@ async function toggleLive() {
     return
   }
   if (capturing.value) return
-  if (props.character.game && !portraits.value.full) await renderPortraits()
+  if (!portraits.value.full) await renderPortraits()
   if (lifetime.signal.aborted) return
   message.value = ''
   live.value = true
@@ -143,14 +141,13 @@ async function toggleLive() {
     if (controller.signal.aborted) return
     const [runtime, resources] = await Promise.all([
       import('./renderer/viewer.js'),
-      props.character.game ? prepareGame() : preparePreview(Number(props.character.id)),
+      prepareGame(),
     ])
     const scene = await loadScene(resources, controller.signal)
     if (controller.signal.aborted || !canvas.value) return
     viewer = new runtime.Viewer(canvas.value)
     viewer.setMode(view.value)
     viewer.setHidden('head', hideHelmet.value || view.value === 'portrait')
-    viewer.setHidden('weapons', false)
     const missing = await loadViewer(viewer, scene, resources, controller.signal)
     if (!controller.signal.aborted && missing) message.value = '有 ' + missing + ' 张贴图未能加载'
   } catch (error) {
@@ -174,7 +171,7 @@ async function save() {
     const mode = view.value
     const figureSource = activeViewer?.canvas ?? (staticPortrait.value ? imageFrom(staticPortrait.value) : undefined)
     if (!figureSource) return
-    const [figure, backdrop] = await Promise.all([figureSource, imageFrom(aetherBackground.value)])
+    const [figure, backdrop] = await Promise.all([figureSource, imageFrom(aetherBackground)])
     if (activeViewer !== viewer || mode !== view.value || lifetime.signal.aborted) return
     activeViewer?.render()
     const link = document.createElement('a')
@@ -204,11 +201,10 @@ onBeforeUnmount(() => {
     </div>
     <div class="hero-loadout">
       <slot name="main-hand" />
-      <div v-if="currentJob?.name" class="hero-job">
+      <div v-if="currentJob.name" class="hero-job">
         <img v-if="currentJob.icon" :src="currentJob.icon" alt="" width="23" height="23">
         <span>{{ currentJob.name }}</span>
         <strong v-if="currentJob.level">Lv. {{ currentJob.level }}</strong>
-        <small v-if="currentJob.demo">示例</small>
       </div>
     </div>
     <div class="hero-layout">
@@ -224,8 +220,8 @@ onBeforeUnmount(() => {
         <button v-if="live && !busy" type="button" class="hero-reset" title="还原视角" aria-label="还原视角" @click="viewer?.reset()">
           <UiIcon name="focus" :size="18" />
         </button>
-        <p v-if="message || (capturing && !staticPortrait) || (character.game && !character.game.appearance)" class="hero-message" role="status">
-          {{ message || (capturing ? '正在准备角色图片…' : character.game?.detailError || '暂无角色外观') }}
+        <p v-if="message || (capturing && !staticPortrait) || !character.appearance" class="hero-message" role="status">
+          {{ message || (capturing ? '正在准备角色图片…' : character.detailError || '暂无角色外观') }}
         </p>
       </div>
       <slot name="accessories" />
@@ -237,9 +233,9 @@ onBeforeUnmount(() => {
       </div>
       <div class="hero-actions">
         <button type="button" class="hero-button hero-live" :aria-pressed="live"
-          :disabled="capturing || (character.game && !character.game.appearance)" @click="toggleLive">
+          :disabled="capturing || !character.appearance" @click="toggleLive">
           <UiIcon name="cube" :size="17" />
-          <span>{{ busy ? (character.game ? '取消加载' : '加载中') : live ? '退出 3D' : '3D 预览' }}</span>
+          <span>{{ busy ? '取消加载' : live ? '退出 3D' : '3D 预览' }}</span>
         </button>
         <button type="button" class="hero-button hero-export" aria-label="导出 PNG"
           :disabled="busy || exporting || (!live && !staticPortrait)" @click="save">
@@ -247,12 +243,12 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
-    <div v-if="character.game && live && !busy && loadedSlots.includes('head')">
+    <div v-if="live && !busy && loadedSlots.includes('head')">
       <button class="hero-button" type="button"
         :disabled="view === 'portrait'" :aria-pressed="!hideHelmet && view !== 'portrait'"
         @click="hideHelmet = !hideHelmet; viewer?.setHidden('head', hideHelmet)">显示头部装备</button>
     </div>
-    <div v-if="character.game && capturing" class="portrait-capture" aria-hidden="true"><canvas ref="offscreen"></canvas></div>
+    <div v-if="capturing" class="portrait-capture" aria-hidden="true"><canvas ref="offscreen"></canvas></div>
   </section>
 </template>
 

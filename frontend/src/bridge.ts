@@ -1,8 +1,3 @@
-interface PreviewResources {
-  scene: string
-  textureRoot: string
-}
-
 export interface VersionStatus {
   revision: string | null
   cached: boolean
@@ -80,6 +75,7 @@ export interface GameResponse {
 
 export interface CommunityStatus {
   state: string
+  jobsStatus: string
   jobProfile: { character: string; area: string; world: string; levels: Record<string, number> } | null
 }
 
@@ -114,16 +110,6 @@ export const cancelGameOperation = (id: string) => invokeClient<boolean>('Cancel
 export const signOutGame = () => invokeClient<boolean>('SignOutGame')
 export const getCommunityStatus = () => invokeClient<CommunityStatus | null>('GetCommunityStatus')
 export const selectCommunityCharacter = (id: string) => invokeClient<string | null>('SelectCommunityCharacter', [id])
-
-export async function preparePreview(characterId: number) {
-  try {
-    const resources = await invokeClient<PreviewResources | null>('PreparePreview', [characterId])
-    if (resources) return resources
-  } catch {
-    throw new Error('无法连接到客户端预览服务')
-  }
-  throw new Error('此角色没有可用的预览场景')
-}
 
 export async function prepareGamePreview(characterId: string, requestId: string) {
   const response = await invokeClient<{

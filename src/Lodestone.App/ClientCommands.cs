@@ -14,7 +14,7 @@ internal sealed class ClientCommands : IDisposable
     private readonly GamePreview preview;
     private readonly CommunityBrowser browser = new();
     private RisingStonesSession? community;
-    private GameAuthorization? communityOwner;
+    private CommunityAccess? communityOwner;
     private readonly object gate = new();
     private VersionOperation? active;
     private bool disposed;
@@ -50,13 +50,13 @@ internal sealed class ClientCommands : IDisposable
     public CommunityStatus? GetCommunityStatus()
     {
         var snapshot = Volatile.Read(ref community)?.Snapshot;
-        return snapshot is null ? null : new CommunityStatus(snapshot.State, snapshot.JobProfile is { } profile
+        return snapshot is null ? null : new CommunityStatus(snapshot.State, snapshot.JobsStatus, snapshot.JobProfile is { } profile
                 ? new CommunityJobStatus(profile.Character, profile.Area, profile.World, profile.Levels) : null);
     }
 
     public Task<string?> SelectCommunityCharacter(string contentId) => MainThread.InvokeOnMainThreadAsync(async () =>
     {
-        if (game.FindCommunityCharacter(contentId) is not { } selection || !ReferenceEquals(selection.Authorization, communityOwner))
+        if (game.FindCommunityCharacter(contentId) is not { } selection || !ReferenceEquals(selection.Owner, communityOwner))
             return "无法核对所选游戏角色，请重新读取角色列表。";
         return await browser.SelectRoleAsync(selection.Character, () => game.FindCommunityCharacter(contentId) == selection);
     });
@@ -69,46 +69,47 @@ internal sealed class ClientCommands : IDisposable
 
     private void UpdateCommunitySession()
     {
-        var (owner, exchange) = game.CurrentAuthorization;
+        var owner = game.CurrentCommunity;
         if (ReferenceEquals(owner, communityOwner))
             return;
         communityOwner = owner;
         var session = owner is null ? null : new RisingStonesSession(owner.AccountId, reusesSession: true);
         Volatile.Write(ref community, session);
-        browser.SetSession(session, owner?.CommunityCookies ?? []);
-        if (owner is not null && session is not null && exchange is not null)
+        browser.SetSession(session, owner?.FederatedCookies ?? [],
+            owner is { Remember: true } ? cookies => game.SaveCommunityAsync(owner, cookies) : null);
+        if (owner is null || session is null)
+            return;
+        if (owner.Ticket is { } exchange)
             _ = ResumeCommunityAsync(owner, session, exchange);
+        else
+            _ = browser.ResumeSavedAsync(owner.SavedCookies);
     }
 
     private async Task ResumeCommunityAsync(
-        GameAuthorization owner, RisingStonesSession session, Task<CommunityTicketResult> exchange)
+        CommunityAccess owner, RisingStonesSession session, Task<CommunityTicketResult> exchange)
     {
         try
         {
             var result = await exchange;
-            if (ReferenceEquals(game.CurrentAuthorization.Authorization, owner))
+            if (ReferenceEquals(game.CurrentCommunity, owner))
                 await browser.ResumeAsync(result.TakeCallback(), result.Code);
         }
         catch (OperationCanceledException)
         {
-            if (ReferenceEquals(game.CurrentAuthorization.Authorization, owner))
+            if (ReferenceEquals(game.CurrentCommunity, owner))
                 session.RequireConfirmation();
         }
     }
 
     internal void GetLoginResource(object? sender, WebViewWebResourceRequestedEventArgs request)
     {
-        if (!PreviewResources.IsLocal(request.Uri) || !request.Uri.AbsolutePath.StartsWith("/_login/", StringComparison.Ordinal))
+        if (!LodestoneApplication.IsLocalWebViewUri(request.Uri) || !request.Uri.AbsolutePath.StartsWith("/_login/", StringComparison.Ordinal))
             return;
         request.Handled = true;
         var content = game.OpenQr(request.Uri);
         request.SetResponse(content is null ? 404 : 200, content is null ? "Not Found" : "OK", "image/png",
             Task.FromResult(content));
     }
-
-    public PreviewLocation? PreparePreview(int characterId) => characterId == 1
-        ? new PreviewLocation(PreviewResources.Root + "scene.json", PreviewResources.Root + "textures/")
-        : null;
 
     public Task<GamePreviewResult> PrepareGamePreview(string characterId, string requestId) => preview.PrepareAsync(characterId, requestId);
     public bool ReleaseGamePreview(string requestId) => preview.Release(requestId);
@@ -216,10 +217,6 @@ internal sealed class ClientCommands : IDisposable
     }
 }
 
-internal sealed record PreviewLocation(
-    [property: JsonPropertyName("scene")] string Scene,
-    [property: JsonPropertyName("textureRoot")] string TextureRoot);
-
 internal sealed record VersionStatus(
     [property: JsonPropertyName("revision")] string? Revision = null,
     [property: JsonPropertyName("cached")] bool Cached = false,
@@ -231,6 +228,7 @@ internal sealed record VersionProgress(
 
 internal sealed record CommunityStatus(
     [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("jobsStatus")] string JobsStatus,
     [property: JsonPropertyName("jobProfile")] CommunityJobStatus? JobProfile);
 
 internal sealed record CommunityJobStatus(

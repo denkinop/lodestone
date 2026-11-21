@@ -9,7 +9,6 @@ public sealed class LodestoneApplication : Application
         var view = new HybridWebView();
         var commands = new ClientCommands();
         view.SetInvokeJavaScriptTarget(commands);
-        view.WebResourceRequested += PreviewResources.Respond;
         view.WebResourceRequested += commands.GetGamePreviewResource;
         view.WebResourceRequested += commands.GetLoginResource;
         view.HandlerChanged += OnHandlerChanged;
@@ -32,7 +31,7 @@ public sealed class LodestoneApplication : Application
         platform.NavigationStarting += (_, navigation) =>
         {
             if (!Uri.TryCreate(navigation.Uri, UriKind.Absolute, out var uri)
-                || !PreviewResources.IsLocal(uri))
+                || !IsLocalWebViewUri(uri))
                 navigation.Cancel = true;
         };
         platform.CoreWebView2Initialized += (_, _) =>
@@ -48,4 +47,7 @@ public sealed class LodestoneApplication : Application
                 };
         };
     }
+
+    internal static bool IsLocalWebViewUri(Uri uri) =>
+        uri.Scheme == Uri.UriSchemeHttps && uri.Host == "0.0.0.1" && uri.IsDefaultPort;
 }

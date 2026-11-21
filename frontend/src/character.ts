@@ -3,7 +3,6 @@ import type { JobProgress } from './jobs'
 export interface Item {
   id: number
   name: string
-  icon_id?: number
   gameIcon?: number
   category?: string
   rarity?: number
@@ -27,7 +26,7 @@ export interface Equipment {
 }
 
 export interface Character {
-  id: number | string
+  id: string
   name: string
   world: string
   dc: string
@@ -38,20 +37,15 @@ export interface Character {
   deity: string | null
   gear: Equipment[]
   jobProgress?: JobProgress
-  game?: { portraitRoot: string; jobId: number | null; level: number | null; appearance: boolean; detailError: string | null }
-}
-
-export function asset(path: string) {
-  return import.meta.env.BASE_URL + 'demo/' + path
+  portraitRoot: string
+  jobId: number | null
+  level: number | null
+  appearance: boolean
+  detailError: string | null
 }
 
 export function icon(item?: Item, iconRoot?: string) {
-  if (item?.gameIcon && iconRoot) return `${iconRoot}${item.gameIcon}.png`
-  return item?.icon_id ? asset('icons/' + item.icon_id + '.png') : undefined
-}
-
-export function portrait(id: number | string, mode = 'full') {
-  return asset('portraits/' + id + '-' + mode + '.png')
+  return item?.gameIcon && iconRoot ? `${iconRoot}${item.gameIcon}.png` : undefined
 }
 
 export function wikiUrl(item: Item) {

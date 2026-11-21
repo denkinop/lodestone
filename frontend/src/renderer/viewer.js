@@ -1,11 +1,13 @@
 import {vertexSource, fragmentSource, shadowSource} from "./shaders.js";
+import {boundsOf, overlappingAccessorySlots, VERTEX_SIZE} from "./mesh-overlap.js";
 
 const WEAPONS = new Set(["main_hand", "off_hand"]);
+const ARMOR = new Set(["head", "body", "hands", "legs", "feet"]);
+const ACCESSORIES = new Set(["ears", "neck", "wrists", "left_ring", "right_ring"]);
 const MAPS = ["base", "normal", "mask", "index", "specular"];
 const SURFACES = {"skin.shpk": 1, "hair.shpk": 2, "iris.shpk": 3, "charactertattoo.shpk": 4,
     "characterlegacy.shpk": 5, "character.shpk": 6, "characterglass.shpk": 6,
     "characterscroll.shpk": 6, "characterinc.shpk": 6, "charactertransparency.shpk": 6};
-const VERTEX_SIZE = 12;
 const SHADOW_SIZE = 1536;
 const LIGHT = [0.62, 0.85, 0.88];
 const LIGHT_DIRECTION = LIGHT.map((v) => v / Math.hypot(...LIGHT));
@@ -90,22 +92,6 @@ function color(hex, fallback) {
     });
 }
 
-function boundsOf(meshes) {
-    const min = [Infinity, Infinity, Infinity];
-    const max = [-Infinity, -Infinity, -Infinity];
-    for (const {vertices, indices} of meshes) {
-        for (const index of indices) {
-            for (let i = 0; i < 3; i++) {
-                const value = vertices[index * VERTEX_SIZE + i];
-                min[i] = Math.min(min[i], value);
-                max[i] = Math.max(max[i], value);
-            }
-        }
-    }
-    if (!meshes.length) return {min: [-0.5, 0, -0.5], max: [0.5, 1, 0.5]};
-    return {min, max};
-}
-
 function cameraMatrix(eye, center, width, height, far, perspective = false) {
     const vector = eye.map((v, i) => v - center[i]);
     const distance = Math.hypot(...vector);
@@ -181,7 +167,8 @@ export class Viewer {
         this.anisotropy = gl.getExtension("EXT_texture_filter_anisotropic");
         this.meshes = [];
         this.textures = new Map();
-        this.hidden = new Set(["weapons"]);
+        this.hidden = new Set();
+        this.characterMeshes = null;
         this.mode = "full";
         this.spin = false;
         this.reset();
@@ -283,8 +270,10 @@ export class Viewer {
     }
 
     setHidden(slot, hide) {
+        if (this.hidden.has(slot) === hide) return;
         if (hide) this.hidden.add(slot);
         else this.hidden.delete(slot);
+        this.characterMeshes = null;
         this.shadowMatrix = null;
         this.requestFrame();
     }
@@ -386,6 +375,7 @@ export class Viewer {
             if (mesh.hair) gl.deleteBuffer(mesh.hair.buffer);
         }
         this.meshes = [];
+        this.characterMeshes = null;
         this.shadowMatrix = null;
         this.requestFrame();
     }
@@ -423,6 +413,17 @@ export class Viewer {
         return {...part, vertices, indices, vao, vertexBuffer, indexBuffer, hair, aimEyes};
     }
 
+    visibleCharacterMeshes() {
+        if (this.characterMeshes) return this.characterMeshes;
+        const visible = this.meshes.filter(mesh => !WEAPONS.has(mesh.slot) && !this.hidden.has(mesh.slot)
+            && (!mesh.underHead || this.hidden.has("head")));
+        const equipped = new Set(this.scene.gear.filter(item => item.model > 0).map(item => item.slot));
+        const armor = visible.filter(mesh => ARMOR.has(mesh.slot) && equipped.has(mesh.slot)
+            && this.scene.materials[mesh.material].shader !== "skin.shpk");
+        const hidden = overlappingAccessorySlots(visible.filter(mesh => ACCESSORIES.has(mesh.slot)), armor);
+        return this.characterMeshes = visible.filter(mesh => !hidden.has(mesh.slot));
+    }
+
     render() {
         const gl = this.gl;
         const canvas = this.canvas;
@@ -439,10 +440,8 @@ export class Viewer {
         if (!this.meshes.length) return;
 
         const isolated = this.mode === "gear";
-        const meshes = this.meshes.filter((mesh) => isolated ? mesh.slot === this.slot && !mesh.attached
-            : (!WEAPONS.has(mesh.slot) || mesh.attached && !this.hidden.has("weapons"))
-                && !this.hidden.has(mesh.slot)
-                && (!mesh.underHead || this.hidden.has("head")));
+        const meshes = isolated ? this.meshes.filter(mesh => mesh.slot === this.slot && !mesh.attached)
+            : this.visibleCharacterMeshes();
         let bounds = this.fullBounds;
         if (isolated) {
             if (!this.slotBounds.has(this.slot)) this.slotBounds.set(this.slot, boundsOf(meshes));
@@ -488,10 +487,8 @@ export class Viewer {
         gl.uniform3fv(u.camera, eye);
 
         if (eyes) {
-            // Aim from the facial rig's neutral axis so the sculpted iris offset is preserved.
-            // The eye line stays at the default camera position during orbiting.
-            const direction = portrait ? [0, center[1] - eyeMidpoint[1], center[2] + distance - eyeMidpoint[2]]
-                : [0, 0, 1];
+            // Keep the portrait gaze slightly below eye level, independent of framing and orbiting.
+            const direction = portrait ? [0, -0.025, 1] : [0, 0, 1];
             gl.uniform3fv(u["eyeCenters[0]"], eyes.flat());
             gl.uniform4fv(u.eyeRotation, gazeRotation(this.scene.faceForward || [0, 0, 1], direction));
         }

@@ -1,5 +1,3 @@
-import { asset } from './demo'
-
 export const jobGroups = [
   { label: '防护', jobs: [['pld', '骑士'], ['war', '战士'], ['drk', '暗黑骑士'], ['gnb', '绝枪战士']] },
   { label: '治疗', jobs: [['whm', '白魔法师'], ['sch', '学者'], ['ast', '占星术士'], ['sge', '贤者']] },
@@ -20,14 +18,13 @@ type Job = (typeof jobGroups)[number]['jobs'][number]
 export type JobId = Job[0]
 
 export interface JobProgress {
-  source: 'demo' | 'community'
   current: JobId | null
   levels: Partial<Record<JobId, number | null>>
 }
 
 const names = new Map(jobGroups.flatMap(group => Array.from<Job>(group.jobs)))
 export const jobName = (id: JobId) => names.get(id) ?? id
-export const jobIcon = (id: JobId) => asset('jobs/' + id + '.png')
+export const jobIcon = (id: JobId) => `${import.meta.env.BASE_URL}images/jobs/${id}.png`
 
 const lobbyJobs: readonly (JobId | string | null)[] = [
   null, '剑术师', '格斗家', '斧术师', '枪术师', '弓箭手', '幻术师', '咒术师',
@@ -53,5 +50,5 @@ export function communityJobProgress(levels: Record<string, number>, classJobId:
   }
   if (!Object.keys(results).length) return undefined
   const job = classJobId === null ? null : lobbyJobs[classJobId]
-  return { source: 'community', current: job && names.has(job as JobId) ? job as JobId : null, levels: results }
+  return { current: job && names.has(job as JobId) ? job as JobId : null, levels: results }
 }

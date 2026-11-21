@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
-import { icon, wikiUrl, type Character, type Equipment } from './demo'
+import { icon, wikiUrl, type Character, type Equipment } from './character'
 import EquipmentRail from './EquipmentRail.vue'
 import JobLevels from './JobLevels.vue'
 import PreviewStage from './PreviewStage.vue'
@@ -105,7 +105,7 @@ onBeforeUnmount(() => {
         </div>
       </dl>
     </section>
-    <JobLevels v-if="character.jobProgress || character.game" :progress="character.jobProgress ?? { source: 'community', current: null, levels: {} }" />
+    <JobLevels :progress="character.jobProgress" />
   </div>
 
   <div class="character-showcase">

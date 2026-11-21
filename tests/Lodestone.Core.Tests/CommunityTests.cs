@@ -228,4 +228,14 @@ public sealed class CommunityTests
     [InlineData("https://apiff14risingstones.web.sdo.com/api/home/GHome/login", "GET", true)]
     public void CommunityApiAccessIsLimitedToTheKnownReadAndLoginEndpoints(string uri, string method, bool result) =>
         Assert.Equal(result, new RisingStonesSession("fixture").AllowsApiRequest(new Uri(uri), method));
+
+    [Fact]
+    public void SavedCommunitySessionCanReadTheProfileWithoutOpeningSignIn()
+    {
+        var session = new RisingStonesSession("fixture");
+        Assert.False(session.AllowsApiRequest(RisingStonesSession.Entry, "GET", allowSignIn: false));
+        Assert.False(session.AllowsApiRequest(new Uri("https://login.u.sdo.com/sdo/Login/LoginSDO.php"), "GET", allowSignIn: false));
+        Assert.True(session.AllowsApiRequest(new Uri(RisingStonesSession.StatusUrl), "GET", allowSignIn: false));
+        Assert.True(session.AllowsApiRequest(new Uri(RisingStonesSession.ProfileUrl), "GET", allowSignIn: false));
+    }
 }

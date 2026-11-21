@@ -32,8 +32,8 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     private CommunityBinding? currentRole;
     private CommunityCharacter? selectedRole;
 
-    public static Uri Entry { get; } = new(ServiceUrl + "?redirectUrl="
-        + "https%3A%2F%2Fff14risingstones.web.sdo.com%2Fpc%2Findex.html%23%2Fpost");
+    public static Uri Portal { get; } = new("https://ff14risingstones.web.sdo.com/pc/index.html#/post");
+    public static Uri Entry { get; } = new(ServiceUrl + "?redirectUrl=" + Uri.EscapeDataString(Portal.AbsoluteUri));
 
     public CommunitySnapshot Snapshot { get { lock (gate) return snapshot; } }
     public bool CanSelectRole { get { lock (gate) return verified; } }
@@ -137,9 +137,9 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
         IsLoginStatus(uri) || IsBindingStatus(uri) || IsCurrentRole(uri) || IsRoleList(uri)
         || IsApi(uri, "/api/home/groupAndRole/getAreaAndGroupList");
 
-    public bool AllowsApiRequest(Uri uri, string method) => method switch
+    public bool AllowsApiRequest(Uri uri, string method, bool allowSignIn = true) => method switch
     {
-        "GET" => IsAllowedPage(uri) || IsReadEndpoint(uri),
+        "GET" => IsReadEndpoint(uri) || (allowSignIn && IsAllowedPage(uri)),
         "OPTIONS" => IsReadEndpoint(uri),
         _ => false
     };

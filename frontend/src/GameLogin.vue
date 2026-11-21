@@ -5,7 +5,8 @@ import {
   type GameArea, type GameProgress, type GameResponse,
 } from './bridge'
 
-const emit = defineEmits<{ back: []; authorized: [result: GameResponse] }>()
+const props = defineProps<{ logoutError: string }>()
+const emit = defineEmits<{ authorized: [result: GameResponse] }>()
 const mode = ref<'phone' | 'scan'>('phone')
 const account = ref('')
 const remember = ref(false)
@@ -14,23 +15,24 @@ const areas = ref<GameArea[]>([])
 const area = ref<number>()
 const active = ref<string>()
 const progress = ref<GameProgress>()
-const error = ref('')
+const error = ref(props.logoutError)
 const cancelling = ref(false)
 const loadingAreas = ref(false)
+const checkingSaved = ref(true)
 let poll: ReturnType<typeof setTimeout> | undefined
 let mounted = true
 
-async function loadAreas() {
+async function loadAreas(preserveError = false) {
   if (loadingAreas.value) return
   loadingAreas.value = true
-  error.value = ''
+  if (!preserveError) error.value = ''
   try {
     const result = await getGameAreas()
-    if (result.error) error.value = result.error
+    if (result.error && !error.value) error.value = result.error
     areas.value = result.areas
     if (!areas.value.some(option => option.id === area.value)) area.value = undefined
   } catch {
-    error.value = '无法加载官方大区列表'
+    if (!error.value) error.value = '无法加载官方大区列表'
   } finally {
     loadingAreas.value = false
   }
@@ -49,29 +51,31 @@ function schedule(id: string) {
 }
 
 async function login(loginMode: 'phone' | 'scan' | 'saved' = mode.value) {
-  const selectedArea = area.value
-  if (!mounted || active.value || selectedArea === undefined) return
+  const selectedArea = loginMode === 'saved' ? savedArea.value : area.value
+  if (!mounted || active.value || selectedArea == null) return false
   const id = crypto.randomUUID()
   const enteredAccount = loginMode === 'phone' ? account.value.trim() : ''
   active.value = id
   error.value = ''
-  progress.value = { status: loginMode === 'saved' ? '正在恢复盛趣登录' : '正在连接盛趣', number: null, qr: null }
+  progress.value = { status: loginMode === 'saved' ? '正在读取已保存的角色档案' : '正在连接盛趣', number: null, qr: null }
   schedule(id)
   try {
     const result = await beginGameLogin(id, loginMode, enteredAccount, selectedArea, loginMode !== 'saved' && remember.value)
-    if (active.value !== id) return
+    if (active.value !== id) return false
     if (result.error) {
       error.value = result.error
       if (loginMode === 'saved') savedArea.value = await getSavedGameArea().catch(() => null)
     } else {
       clearOperation()
       emit('authorized', result)
+      return true
     }
   } catch {
-    if (active.value === id) error.value = '无法完成盛趣登录，请重试'
+    if (active.value === id) error.value = loginMode === 'saved' ? '无法打开已保存的角色档案' : '无法完成盛趣登录，请重试'
   } finally {
     if (active.value === id) clearOperation()
   }
+  return false
 }
 
 function clearOperation() {
@@ -105,13 +109,15 @@ async function forget() {
 }
 
 onMounted(async () => {
-  const [, saved] = await Promise.all([loadAreas(), getSavedGameArea().catch(() => null)])
+  const saved = await getSavedGameArea().catch(() => null)
   if (!mounted) return
   savedArea.value = saved
-  if (saved !== null && areas.value.some(option => option.id === saved)) {
+  if (saved !== null) {
     area.value = saved
-    await login('saved')
+    if (!props.logoutError && await login('saved')) return
   }
+  checkingSaved.value = false
+  if (mounted) await loadAreas(saved !== null || Boolean(props.logoutError))
 })
 onBeforeUnmount(() => {
   mounted = false
@@ -124,18 +130,17 @@ onBeforeUnmount(() => {
   <main class="narrow-page">
     <div class="page-heading">
       <div><h1>盛趣登录</h1></div>
-      <button class="secondary" type="button" @click="emit('back')">返回</button>
     </div>
-    <section class="paper settings-panel" aria-label="游戏登录">
+    <section class="paper settings-panel" aria-label="盛趣登录">
       <form class="game-form" @submit.prevent="login()">
         <label for="game-area">大区</label>
-        <select id="game-area" v-model="area" :disabled="Boolean(active) || loadingAreas" required>
+        <select id="game-area" v-model="area" :disabled="Boolean(active) || checkingSaved || loadingAreas" required>
           <option :value="undefined" disabled>{{ loadingAreas ? '正在读取大区…' : '请选择大区' }}</option>
           <option v-for="option in areas" :key="option.id" :value="option.id">{{ option.name }}</option>
         </select>
-        <button v-if="!areas.length && !loadingAreas" class="secondary" type="button" @click="loadAreas">重新读取大区</button>
+        <button v-if="!areas.length && !checkingSaved && !loadingAreas" class="secondary" type="button" @click="loadAreas()">重新读取大区</button>
         <div v-if="savedArea !== null" class="game-actions">
-          <button class="secondary" type="button" :disabled="Boolean(active) || area === undefined" @click="login('saved')">使用已保存登录</button>
+          <button class="secondary" type="button" :disabled="Boolean(active)" @click="login('saved')">使用已保存登录</button>
           <button class="secondary" type="button" :disabled="Boolean(active)" @click="forget">清除已保存登录</button>
         </div>
         <label for="login-mode">登录方式</label>
@@ -146,7 +151,7 @@ onBeforeUnmount(() => {
         <label v-if="mode === 'phone'" for="sdo-account">盛趣账号</label>
         <input v-if="mode === 'phone'" id="sdo-account" v-model="account" :disabled="Boolean(active)" autocomplete="off" maxlength="128" required>
         <label class="game-remember"><input v-model="remember" type="checkbox" :disabled="Boolean(active)"> 在此设备保存登录状态</label>
-        <button class="primary" type="submit" :disabled="Boolean(active) || area === undefined">
+        <button class="primary" type="submit" :disabled="Boolean(active) || checkingSaved || loadingAreas || area === undefined">
           {{ mode === 'phone' ? '发送确认' : '获取二维码' }}
         </button>
       </form>

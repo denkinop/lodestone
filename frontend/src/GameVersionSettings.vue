@@ -103,7 +103,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="paper settings-panel version-panel" aria-labelledby="version-title">
     <div class="panel-title">
-      <span class="section-icon"><UiIcon name="settings" :size="18" /></span><h2 id="version-title">游戏版本</h2>
+      <span class="section-icon"><UiIcon name="settings" :size="18" /></span><h2 id="version-title">高级设置</h2>
     </div>
     <form class="version-row" @submit.prevent="save">
       <label for="lobby-version">大厅服务器版本</label>
