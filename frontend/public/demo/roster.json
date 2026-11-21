@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "name": "档案人偶",
+    "world": "本地样例",
+    "dc": "Windows 预览",
+    "race": "人偶",
+    "tribe": null,
+    "gender": null,
+    "birthday": null,
+    "deity": null,
+    "gear": [
+      {
+        "slot": "body",
+        "label": "上衣",
+        "model": 1,
+        "variant": 1,
+        "stains": [{ "name": "藏蓝", "color": "#395c8a" }],
+        "candidates": [
+          { "id": -1, "name": "蓝纹护衣 · 样例", "icon_id": 1 },
+          { "id": -2, "name": "蓝纹外套 · 样例", "icon_id": 1 }
+        ]
+      }
+    ]
+  }
+]
