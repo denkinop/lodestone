@@ -29,6 +29,14 @@ public sealed class LodestoneApplication : Application
             Height = 900,
 #endif
         };
+#if WINDOWS
+        window.Created += (_, _) =>
+        {
+            var icon = Path.Combine(AppContext.BaseDirectory, "lodestone.ico");
+            if (window.Handler?.PlatformView is Microsoft.UI.Xaml.Window nativeWindow && File.Exists(icon))
+                nativeWindow.AppWindow.SetIcon(icon);
+        };
+#endif
         window.Destroying += (_, _) => commands.Dispose();
         return window;
     }

@@ -232,8 +232,8 @@ onBeforeUnmount(() => {
     </div>
     <div class="hero-layout">
       <slot name="equipment" />
-      <div class="hero-frame" :class="{ 'hero-still': !live || busy }">
-        <img v-if="!live || busy" class="hero-aether" :src="aetherBackground" :class="{ 'aether-closeup': view === 'portrait' }" alt="">
+      <div class="hero-frame" :class="{ 'hero-still': !live }">
+        <img v-if="!live" class="hero-aether" :src="aetherBackground" :class="{ 'aether-closeup': view === 'portrait' }" alt="">
         <div class="hero-art" :class="{ 'view-portrait': view === 'portrait', 'is-live': live && !busy }">
           <img v-if="staticPortrait && (!live || busy)" class="hero-character" :src="staticPortrait" :alt="character.name + '的角色预览'">
           <div v-if="live" class="live-viewport">

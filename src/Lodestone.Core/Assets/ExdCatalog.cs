@@ -36,7 +36,7 @@ public sealed class ExdCatalog
     public CharacterData Character { get; }
     public WeatherCatalog Weather { get; }
 
-    private ExdCatalog(JsonElement data)
+    private ExdCatalog(JsonElement data, CharacterData? fallback)
     {
         if (data.GetProperty("format").GetInt32() != Format)
             throw new InvalidDataException("不支持此 EXD 快照格式");
@@ -49,7 +49,7 @@ public sealed class ExdCatalog
         Weather = data.GetProperty("weather").Deserialize<WeatherCatalog>()
             ?? throw new InvalidDataException("EXD 缺少天气数据");
         Validate(Weather);
-        Character = new CharacterData(data);
+        Character = new CharacterData(data, fallback);
     }
 
     private static ExdCatalog LoadBundled()
@@ -59,11 +59,11 @@ public sealed class ExdCatalog
         return Read(resource);
     }
 
-    internal static ExdCatalog Read(Stream compressed)
+    internal static ExdCatalog Read(Stream compressed, CharacterData? fallback = null)
     {
         using var input = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: true);
         using var json = JsonDocument.Parse(input);
-        return new ExdCatalog(json.RootElement);
+        return new ExdCatalog(json.RootElement, fallback);
     }
 
     internal static bool IsWebp(ReadOnlySpan<byte> content) =>
@@ -160,7 +160,7 @@ public sealed class ExdDataStore
         try
         {
             using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-            return ExdCatalog.Read(input);
+            return ExdCatalog.Read(input, ExdCatalog.Bundled.Character);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException
             or KeyNotFoundException or InvalidOperationException or ArgumentException or FormatException or OverflowException

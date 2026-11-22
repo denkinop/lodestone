@@ -11,6 +11,7 @@
   --line: #dde1e7;
   --paper: #fff;
   --surface: #f3f4f6;
+  --preview-background: #e3e8ef;
   --navy: #262e40;
   --blue: #365da4;
   --blue-hover: #2a4b89;
@@ -145,23 +146,13 @@ button, a { -webkit-tap-highlight-color: transparent; }
   isolation: isolate;
   overflow: hidden;
   border-radius: 12px;
+  background: var(--preview-background);
+}
+.hero-frame.hero-still {
   background:
     radial-gradient(ellipse at 56% 82%, #8f76ad66, transparent 54%),
     radial-gradient(ellipse at 55% 48%, #536486, transparent 62%),
     linear-gradient(142deg, #39445d, #2b354d 49%, #20263a);
-}
-.hero-frame::before {
-  content: "";
-  position: absolute;
-  left: 54%;
-  top: 52%;
-  width: min(68%, 450px);
-  aspect-ratio: 1;
-  transform: translate(-50%, -50%);
-  border: 1px solid #eee7f731;
-  border-radius: 50%;
-  box-shadow: 0 0 0 26px #eee7f70e, 0 0 0 63px #eee7f709;
-  pointer-events: none;
 }
 .hero-aether {
   position: absolute;
@@ -174,14 +165,10 @@ button, a { -webkit-tap-highlight-color: transparent; }
 }
 .hero-aether.aether-closeup { object-position: center 30%; }
 .hero-frame.hero-still::before {
-  z-index: 0;
+  position: absolute;
   inset: 0;
-  width: auto;
-  aspect-ratio: auto;
-  transform: none;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
+  content: "";
+  pointer-events: none;
   background: linear-gradient(180deg, #08172b24, transparent 28%, transparent 80%, #07172b34);
 }
 .hero-frame::after {

@@ -8,6 +8,55 @@ namespace Lodestone.Core.Tests;
 public sealed class ExdTests
 {
     [Fact]
+    public void WardrobeSearchUsesItemSlotsAndKeepsRingChoicesIndependent()
+    {
+        var wardrobe = ExdCatalog.Bundled.Character.Wardrobe;
+        var page = wardrobe.Search("body", "", 0);
+        Assert.True(page.More);
+        Assert.NotEmpty(page.Items);
+        Assert.Empty(page.Items.Select(item => item.Id).Intersect(wardrobe.Search("body", "", 1).Items.Select(item => item.Id)));
+
+        var robe = Assert.Single(wardrobe.Search("body", "朱红术士斗篷", 0).Items);
+        Assert.Equal(24855, robe.Id);
+        Assert.Equal("head", Assert.Single(robe.Covers));
+        Assert.Empty(wardrobe.Search("head", "24855", 0).Items);
+        Assert.Empty(wardrobe.Search("main_hand", "1601", 0).Items);
+        Assert.Empty(wardrobe.Search("off_hand", "1684", 0).Items);
+        var ring = Assert.Single(wardrobe.Search("left_ring", "4299", 0).Items);
+        Assert.Equal(ring.Id, Assert.Single(wardrobe.Search("right_ring", "4299", 0).Items).Id);
+        Assert.Empty(ring.Covers);
+    }
+
+    [Fact]
+    public void WardrobeRestoresAnEarlierChoiceWhenTheCoveringItemIsRemoved()
+    {
+        var wardrobe = ExdCatalog.Bundled.Character.Wardrobe;
+        var weapon = new CharacterEquipment("main_hand", 301, 3, 1, 1, 2);
+        var offHand = new CharacterEquipment("off_hand", 351, 3, 1, 1, 2);
+        var originalBody = new CharacterEquipment("body", 6, 0, 1, 0, 0);
+        CharacterEquipment[] original = [weapon, offHand, originalBody];
+        WardrobeChange[] changes = [new("head", 2629), new("left_ring", 4299), new("right_ring", 4299), new("body", 24855)];
+
+        var covered = wardrobe.Compose(original, changes);
+        Assert.Equal("body", covered.CoveredSlots["head"]);
+        Assert.DoesNotContain(covered.Equipment, item => item.Slot == "head");
+        Assert.DoesNotContain(covered.Equipment, item => item.Slot is "main_hand" or "off_hand");
+
+        var restored = wardrobe.Compose(original, changes[..^1]);
+        Assert.Empty(restored.CoveredSlots);
+        Assert.Contains(originalBody, restored.Equipment);
+        Assert.Contains(restored.Equipment, item => item is { Slot: "head", Model: 4, Variant: 1 });
+        Assert.Contains(restored.Equipment, item => item.Slot == "left_ring");
+        Assert.Contains(restored.Equipment, item => item.Slot == "right_ring");
+
+        var editedCoveredSlot = wardrobe.Compose(original, [new("body", 24855), new("head", 2629)]);
+        Assert.Empty(editedCoveredSlot.CoveredSlots);
+        Assert.Contains(originalBody, editedCoveredSlot.Equipment);
+        Assert.DoesNotContain(wardrobe.Compose(original, [new("body", 0)]).Equipment, item => item.Slot == "body");
+        Assert.Throws<SqPackException>(() => wardrobe.Compose(original, [new("off_hand", 1684)]));
+    }
+
+    [Fact]
     public async Task PublishesBothCatalogsTogetherAndKeepsThePreviousSnapshotOnVersionMismatch()
     {
         var directory = Directory.CreateTempSubdirectory();

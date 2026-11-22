@@ -306,6 +306,12 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             return session is { } active ? Preview(active, contentId, exd.Current.Character) : null;
     }
 
+    internal PreviewCharacter? FindSelectedPreviewCharacter(string contentId)
+    {
+        lock (gate)
+            return session is { } active && active.Catalog.Choice?.Id == contentId ? Preview(active, contentId, exd.Current.Character) : null;
+    }
+
     internal GameResponse? GetCurrent()
     {
         lock (gate)

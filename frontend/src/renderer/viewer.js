@@ -290,18 +290,14 @@ export class Viewer {
         this.pendingFrame = this.platform ? this.platform.schedule(draw) : requestAnimationFrame(draw);
     }
 
-    async load(scene, signal, textureURL) {
+    async load(scene, signal, textureURL, requireTextures = false) {
         if (signal.aborted) return 0;
-        if (this.resourceSource !== scene.resourceSource) {
-            for (const texture of this.textures.values()) this.gl.deleteTexture(texture);
-            this.textures.clear();
-            this.resourceSource = scene.resourceSource;
-        }
+        const sameSource = this.resourceSource === scene.resourceSource;
         const query = scene.resourceSource ? "?source=" + encodeURIComponent(scene.resourceSource) : "";
         const source = new Map();
         for (const material of Object.values(scene.materials)) {
             for (const [role, id] of Object.entries(material.maps)) {
-                if (!this.textures.has(id)) source.set(id, role);
+                if (!sameSource || !this.textures.has(id)) source.set(id, role);
             }
         }
         const images = await Promise.all([...source].map(async ([id, role]) => {
@@ -316,17 +312,19 @@ export class Viewer {
                 return [id, role, null];
             }
         }));
-        if (signal.aborted) {
+        const missing = images.filter(([,, image]) => !image).length;
+        if (signal.aborted || (requireTextures && missing)) {
             for (const [,, image] of images) image?.close?.();
-            return 0;
+            return signal.aborted ? 0 : missing;
         }
         const gl = this.gl;
-        let missing = 0;
+        if (!sameSource) {
+            for (const texture of this.textures.values()) gl.deleteTexture(texture);
+            this.textures.clear();
+            this.resourceSource = scene.resourceSource;
+        }
         for (const [id, role, image] of images) {
-            if (!image) {
-                missing++;
-                continue;
-            }
+            if (!image) continue;
             const texture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, texture);
             if (this.platform) this.platform.uploadTexture(gl, image);

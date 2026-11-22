@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import UiIcon from './UiIcon.vue'
 
-type Destination = 'home' | 'profile' | 'weather' | 'settings'
+type Destination = 'home' | 'profile' | 'wardrobe' | 'weather' | 'settings'
 
 defineProps<{ current: Destination }>()
 const emit = defineEmits<{ navigate: [destination: Destination] }>()
@@ -16,7 +16,10 @@ const sections = [
       { destination: 'settings', label: '设置', icon: 'settings' },
     ],
   },
-  { label: '工具', items: [{ destination: 'weather', label: '天气', icon: 'weather' }] },
+  { label: '工具', items: [
+    { destination: 'weather', label: '天气', icon: 'weather' },
+    { destination: 'wardrobe', label: '衣橱', icon: 'shirt' },
+  ] },
 ] as const
 
 const mobileViewport = window.matchMedia('(max-width: 760px)')
@@ -148,6 +151,7 @@ onBeforeUnmount(() => mobileViewport.removeEventListener('change', syncViewport)
 .nav-item[data-destination="profile"] .nav-item-icon { color: var(--violet); background: var(--violet-light); }
 .nav-item[data-destination="settings"] .nav-item-icon { color: var(--muted); background: var(--surface); }
 .nav-item[data-destination="weather"] .nav-item-icon { color: var(--weather-accent); background: var(--weather-tint); }
+.nav-item[data-destination="wardrobe"] .nav-item-icon { color: var(--teal); background: var(--teal-light); }
 .nav-item[aria-current="page"] {
   color: var(--blue-hover);
   background: var(--blue-light);

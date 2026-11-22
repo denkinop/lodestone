@@ -8,5 +8,6 @@
       <data android:scheme="https" />
     </intent>
   </queries>
-  <application android:allowBackup="false" android:usesCleartextTraffic="false" />
+  <application android:allowBackup="false" android:usesCleartextTraffic="false"
+    android:icon="@mipmap/lodestone" android:roundIcon="@mipmap/lodestone_round" />
 </manifest>

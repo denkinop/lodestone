@@ -47,9 +47,13 @@ public sealed class CharacterData
     private readonly Dictionary<int, EquipmentStain> stains = [];
     private readonly Dictionary<ushort, string> worlds = [];
     private readonly Dictionary<int, string> guardianDeities = [];
+    public WardrobeCatalog Wardrobe { get; }
 
-    internal CharacterData(JsonElement data)
+    internal CharacterData(JsonElement data, CharacterData? fallback = null)
     {
+        Wardrobe = new WardrobeCatalog();
+        if (data.TryGetProperty("wardrobeSlotCoverage", out var coverage) && coverage.ValueKind == JsonValueKind.True)
+            fallback = null;
         foreach (var value in data.GetProperty("items").EnumerateArray())
         {
             var candidate = new EquipmentCandidate(value[0].GetInt32(), ReadName(value[1]), value[2].GetInt32())
@@ -63,8 +67,15 @@ public sealed class CharacterData
                     candidates[key] = entry = [];
                 if (entry.Count == 0 || entry[^1].Id != candidate.Id)
                     entry.Add(candidate);
+                if (key.Item1 >= WardrobeCatalog.FirstSlot)
+                {
+                    var covered = value.GetArrayLength() > 5 ? value[5].GetInt32()
+                        : fallback?.Wardrobe.CoveredMask(key.Item1, candidate.Id, key.Item2) ?? 0;
+                    Wardrobe.Add(key.Item1, key.Item2, candidate, covered);
+                }
             }
         }
+        Wardrobe.Sort();
         foreach (var value in data.GetProperty("stains").EnumerateArray())
         {
             var id = value[0].GetInt32();

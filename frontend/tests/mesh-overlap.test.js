@@ -38,6 +38,7 @@ test("the character view hides weapons and rechecks accessory overlap when headg
         },
         meshes: [
             mesh("main_hand", surface, {attached: true}), mesh("off_hand", surface, {attached: true}),
+            mesh("off_hand", clear, {attached: false}),
             mesh("head", surface), mesh("ears", crossing),
             mesh("hands", surface, {material: "skin"}), mesh("left_ring", clear), mesh("right_ring", clear),
             mesh("body", clear), mesh("neck", clear),

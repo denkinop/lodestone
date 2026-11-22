@@ -67,6 +67,7 @@ internal sealed class XivApiExdImporter(HttpClient http)
             source = new { api = Api, language = Language, version = release!.Version, schema = release.Schema },
             sources = tables.ToDictionary(pair => pair.Key, pair =>
                 Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(pair.Value)))),
+            wardrobeSlotCoverage = true,
             items,
             stains = tables["Stain"].Where(pair => pair.Key > 0).Select(pair =>
             {
@@ -197,7 +198,13 @@ internal sealed class XivApiExdImporter(HttpClient http)
             Number(item, "DamagePhys"), Number(item, "DamageMag"), Number(item, "DefensePhys"), Number(item, "DefenseMag"),
             attributes
         ];
-        return [id, name, Number(item, "Icon@as(raw)"), models, details];
+        var coveredSlots = 0;
+        for (var index = 2; index < Slots.Length; index++)
+            if (Number(slots, Slots[index]) < 0)
+                coveredSlots |= 1 << index;
+        return coveredSlots == 0
+            ? [id, name, Number(item, "Icon@as(raw)"), models, details]
+            : [id, name, Number(item, "Icon@as(raw)"), models, details, coveredSlots];
     }
 
     private static IEnumerable<object[]> WorldNames(Dictionary<int, JsonElement> rows)

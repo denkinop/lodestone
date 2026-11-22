@@ -2,21 +2,23 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import AppNavigation from './AppNavigation.vue'
 import CharacterDetails from './CharacterDetails.vue'
+import CharacterSettingsPrompt from './CharacterSettingsPrompt.vue'
 import GameVersionSettings from './GameVersionSettings.vue'
 import GameLogin from './GameLogin.vue'
 import HomePage from './HomePage.vue'
 import PageHeading from './PageHeading.vue'
 import UiIcon from './UiIcon.vue'
+import WardrobePage from './WardrobePage.vue'
 import WeatherPage from './WeatherPage.vue'
 import type { Character } from './character'
 import { communityJobProgress, lobbyJobName } from './jobs'
 import {
   beginGameLogin, cancelGameOperation, chooseGameCharacter, getCommunityStatus, getCurrentGame, getExdProgress, getExdWeather,
   getSavedGameArea, refreshExd, refreshLobby, selectCommunityCharacter, selectServiceAccount, signOutGame,
-  type CommunityStatus, type ExdWeatherView, type GameCharacter, type GameResponse,
+  type CommunityStatus, type ExdWeatherView, type GameCharacter, type GameResponse, type WardrobeChange,
 } from './bridge'
 
-type Screen = 'home' | 'choose' | 'profile' | 'weather' | 'settings'
+type Screen = 'home' | 'choose' | 'profile' | 'wardrobe' | 'weather' | 'settings'
 const screen = ref<Screen>('home')
 const game = ref<GameResponse>()
 const community = ref<CommunityStatus>()
@@ -33,6 +35,7 @@ const exdLoading = ref(false)
 const exdUpdating = ref(false)
 const exdStatus = ref('')
 const exdGeneration = ref(0)
+const wardrobeDraft = shallowRef<readonly WardrobeChange[]>([])
 let attemptedPortrait: string | undefined
 let restoreRequest: string | undefined
 let poll: ReturnType<typeof setTimeout> | undefined
@@ -62,6 +65,8 @@ const profileKey = computed(() => {
   const character = gameCharacter.value
   return character ? `${character.id}:${character.revision}:${exdGeneration.value}` : undefined
 })
+
+watch(profileKey, () => { wardrobeDraft.value = [] }, { flush: 'sync' })
 
 watch(() => gameCharacter.value?.portraitRoot, () => {
   attemptedPortrait = undefined
@@ -391,6 +396,11 @@ onBeforeUnmount(() => {
         </section>
       </main>
 
+      <WardrobePage v-if="screen === 'wardrobe'" :key="profileKey" :character="gameCharacter"
+        :prompt="restoring || signingOut ? characterPrompt : game ? '请在设置中选择角色。' : '请在设置中登录后选择角色。'"
+        :can-open-settings="!restoring && !signingOut" :draft="wardrobeDraft"
+        @settings="go('settings')" @draft="wardrobeDraft = $event" />
+
       <main v-if="screen === 'choose' && game" class="choose-page">
         <PageHeading title="选择角色">
           <button type="button" class="secondary" :disabled="lobbyBusy || choosing" @click="backFromChoice">返回设置</button>
@@ -430,12 +440,8 @@ onBeforeUnmount(() => {
           <CharacterDetails :key="profileKey" :character="profile" :active="screen === 'profile'"
             @portrait-start="startPortrait" @portrait-ready="showPortrait" @portrait-finish="finishPortrait" />
         </div>
-        <section v-else class="paper settings-panel">
-          <div class="profile-prompt">
-            <p role="status">{{ characterPrompt }}</p>
-            <button v-if="!restoring && !signingOut" type="button" class="secondary" @click="go('settings')">前往设置</button>
-          </div>
-        </section>
+        <CharacterSettingsPrompt v-else :message="characterPrompt" :can-open-settings="!restoring && !signingOut"
+          @settings="go('settings')" />
       </main>
 
       <main v-if="screen === 'settings' || showLogin" v-show="screen === 'settings'" class="settings-page">

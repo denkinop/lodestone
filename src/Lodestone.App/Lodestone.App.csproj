@@ -38,6 +38,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.110" />
     <ProjectReference Include="../Lodestone.Core/Lodestone.Core.csproj" />
+    <MauiIcon Include="Resources/AppIcon/lodestone.png" BaseSize="144,144" />
     <MauiAsset Include="$(FrontendDirectory)/**/*" LogicalName="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
   <Target Name="RequireFrontend" BeforeTargets="PrepareForBuild" Condition="!Exists('$(FrontendDirectory)/index.html')">

@@ -24,6 +24,7 @@ public sealed record SceneData(IReadOnlyList<SceneMesh> Meshes, IReadOnlyDiction
     float[] EyePlane, float[][]? EyeCenters, float[] FaceForward, IReadOnlyDictionary<string, int> Appearance,
     string[] Warnings, string ResourceSource, bool HeadHidden);
 public sealed record SceneAssets(SceneData Scene, IReadOnlyDictionary<string, byte[]> Textures);
+public sealed record WardrobeScene(SceneAssets Assets, IReadOnlyDictionary<string, string> CoveredSlots, IReadOnlySet<string> AppliedSlots);
 
 public sealed class CharacterScene(SqPackArchive pack)
 {
@@ -33,7 +34,19 @@ public sealed class CharacterScene(SqPackArchive pack)
     public Task<SceneAssets> BuildAsync(LobbyCharacter character, string revision, CancellationToken token) =>
         BuildAsync(character, revision, CharacterData.Instance, token);
 
-    public async Task<SceneAssets> BuildAsync(LobbyCharacter character, string revision, CharacterData data, CancellationToken token)
+    public Task<SceneAssets> BuildAsync(LobbyCharacter character, string revision, CharacterData data, CancellationToken token) =>
+        BuildAsync(character, revision, data, null, token);
+
+    public async Task<WardrobeScene> BuildWardrobeAsync(LobbyCharacter character, string revision, CharacterData data,
+        IReadOnlyList<WardrobeChange> changes, CancellationToken token)
+    {
+        var outfit = data.Wardrobe.Compose(character.Equipment, changes);
+        var assets = await BuildAsync(character with { Equipment = outfit.Equipment }, revision, data, outfit, token);
+        return new(assets, outfit.CoveredSlots, outfit.TriedSlots);
+    }
+
+    private async Task<SceneAssets> BuildAsync(LobbyCharacter character, string revision, CharacterData data,
+        WardrobeOutfit? outfit, CancellationToken token)
     {
         if (character.Appearance is not { Customize.Count: >= 26 } appearance || appearance.Race is < 1 or > 8
             || appearance.Gender is < 0 or > 1)
@@ -72,12 +85,16 @@ public sealed class CharacterScene(SqPackArchive pack)
         for (var index = 0; index < CharacterData.Slots.Length; index++)
         {
             var slot = CharacterData.Slots[index];
+            if (outfit?.CoveredSlots.ContainsKey(slot.Key) == true)
+                continue;
             var item = equipped.GetValueOrDefault(slot.Key) ?? new CharacterEquipment(slot.Key, 0, 0, 0, 0, 0);
             if (item.Model == 0 && index is not (>= 3 and <= 6))
                 continue;
             var part = await ResolveEquipment(item, index, race, deformer, token);
             if (part is not null)
                 parts.Add(part);
+            else if (outfit?.TriedSlots.Contains(slot.Key) == true)
+                throw new SqPackException($"{slot.Name}缺少适用于当前角色的模型");
             else if (item.Model != 0)
                 warnings.Add($"{slot.Name}模型缺失");
         }
@@ -103,14 +120,14 @@ public sealed class CharacterScene(SqPackArchive pack)
             var bytes = part.Model ?? await pack.ReadAsync(part.Path, token);
             if (bytes is null)
             {
-                warnings.Add($"模型缺失 · {FileName(part.Path)}");
+                ReportModelFailure(part, "模型缺失");
                 continue;
             }
             CharacterModel model;
             try { model = Read(bytes, part.Slot == "face", token); }
             catch (Exception ex) when (part.Slot != "face" && ex is (SqPackException or OverflowException))
             {
-                warnings.Add($"无法解析模型 · {FileName(part.Path)}");
+                ReportModelFailure(part, "无法解析模型");
                 continue;
             }
             foreach (var mesh in model.Meshes)
@@ -162,6 +179,13 @@ public sealed class CharacterScene(SqPackArchive pack)
                 ["hair_tone"] = custom[10], ["highlights"] = custom[11], ["right_eye_color"] = custom[9],
                 ["left_eye_color"] = custom[15], ["race_feature_type"] = custom[22], ["face_paint_id"] = appearance.FacePaint
             }, warnings.ToArray(), revision, true), textures);
+
+        void ReportModelFailure(Part part, string message)
+        {
+            if (outfit?.TriedSlots.Contains(part.Slot) == true)
+                throw new SqPackException($"{CharacterData.Slots.First(slot => slot.Key == part.Slot).Name}装备{message}");
+            warnings.Add($"{message} · {FileName(part.Path)}");
+        }
 
         async Task<string?> LoadTexture(string path, string role)
         {

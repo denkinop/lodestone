@@ -166,6 +166,39 @@ export async function prepareGamePreview(characterId: string, requestId: string)
 }
 
 export const releaseGamePreview = (id: string) => invokeClient<boolean>('ReleaseGamePreview', [id])
+
+export interface WardrobeItem {
+  id: number
+  name: string
+  icon: number
+  rarity: number
+  itemLevel: number
+  equipLevel: number
+  jobCategory: string
+  covers: string[]
+}
+
+export interface WardrobeChange {
+  slot: string
+  itemId: number
+  name?: string
+}
+
+export const searchWardrobe = (slot: string, query: string, page: number) =>
+  invokeClient<{ items: WardrobeItem[]; more: boolean }>('SearchWardrobe', [slot, query, page])
+
+export async function prepareWardrobePreview(characterId: string, requestId: string, changes: readonly WardrobeChange[]) {
+  const response = await invokeClient<{
+    scene: string | null; textureRoot: string | null; coveredSlots: Record<string, string> | null
+    appliedSlots: string[] | null; error: string | null
+  }>('PrepareWardrobePreview', [characterId, requestId, JSON.stringify(changes.map(({ slot, itemId }) => ({ slot, itemId })))])
+  if (!response.scene || !response.textureRoot)
+    throw new Error(response.error || '无法加载试穿预览')
+  return { scene: response.scene, textureRoot: response.textureRoot,
+    coveredSlots: response.coveredSlots ?? {}, appliedSlots: response.appliedSlots ?? [] }
+}
+
+export const releaseWardrobePreview = (id: string) => invokeClient<boolean>('ReleaseWardrobePreview', [id])
 export const androidClient = /\bAndroid\b/.test(navigator.userAgent)
 
 export const saveGamePortrait = (id: string, mode: 'full' | 'portrait', png: string) =>

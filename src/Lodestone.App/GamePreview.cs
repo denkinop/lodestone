@@ -6,19 +6,16 @@ using Lodestone.Core.Cdn;
 
 namespace Lodestone.App;
 
-internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCharacter?> findCharacter) : IDisposable
+internal sealed class GamePreview(GamePreviewSource source, Func<string, PreviewCharacter?> findCharacter, string root,
+    Func<WardrobeCatalog>? wardrobe = null) : IDisposable
 {
-    private const string Root = "/_game_preview/";
     private readonly object gate = new();
     private readonly SemaphoreSlim buildLock = new(1);
     private Operation? active;
     private Prepared? prepared;
-    private CdnSnapshot? snapshot;
-    private CharacterScene? builder;
-    private long checkedAt;
     private bool disposed;
 
-    internal async Task<GamePreviewResult> PrepareAsync(string contentId, string requestId)
+    internal async Task<GamePreviewResult> PrepareAsync(string contentId, string requestId, WardrobeChange[]? changes = null)
     {
         if (!ulong.TryParse(contentId, NumberStyles.None, CultureInfo.InvariantCulture, out _)
             || !Guid.TryParseExact(requestId, "D", out var id)
@@ -42,12 +39,20 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
                 await buildLock.WaitAsync(token);
                 try
                 {
+                    if (changes is not null)
+                    {
+                        var (builder, revision) = await source.GetAsync(token);
+                        var outfit = await builder.BuildWardrobeAsync(character.Character, revision, character.Data, changes, token);
+                        token.ThrowIfCancellationRequested();
+                        return new Prepared(id, character, JsonSerializer.SerializeToUtf8Bytes(outfit.Assets.Scene, PreviewCache.Json),
+                            outfit.Assets.Textures, [], outfit.CoveredSlots, outfit.AppliedSlots);
+                    }
                     var scene = PreviewCache.ReadScene(character);
                     token.ThrowIfCancellationRequested();
                     if (scene is null)
                     {
-                        var source = await GetSourceAsync(token);
-                        scene = await source.BuildAsync(character.Character, snapshot!.Revision, character.Data, token);
+                        var (builder, revision) = await source.GetAsync(token);
+                        scene = await builder.BuildAsync(character.Character, revision, character.Data, token);
                         token.ThrowIfCancellationRequested();
                         try { PreviewCache.SaveScene(character, scene); }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -68,9 +73,10 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
                 operation.Cancellation.Token.ThrowIfCancellationRequested();
                 prepared = result with { Cancellation = new CancellationTokenSource() };
             }
-            var route = Root + id.ToString("D") + "/";
-            return new(route + "scene.json", route + "textures/", route + "icons/", Full: HasPortrait(character, "full"),
-                Portrait: HasPortrait(character, "portrait"));
+            var route = root + id.ToString("D") + "/";
+            return new(route + "scene.json", route + "textures/", route + "icons/",
+                Full: changes is null && HasPortrait(character, "full"), Portrait: changes is null && HasPortrait(character, "portrait"),
+                CoveredSlots: result.CoveredSlots, AppliedSlots: result.AppliedSlots);
         }
         catch (OperationCanceledException)
         {
@@ -94,22 +100,6 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
             }
         }
     }
-
-    private async Task<CharacterScene> GetSourceAsync(CancellationToken token)
-    {
-        var timestamp = Interlocked.Read(ref checkedAt);
-        if (snapshot is null || timestamp == 0 || Environment.TickCount64 - timestamp > 300_000)
-        {
-            var current = await cdn.GetSnapshotAsync(token);
-            if (snapshot?.Fingerprint != current.Fingerprint)
-                builder = new CharacterScene(new SqPackArchive(cdn, current));
-            snapshot = current;
-            Interlocked.Exchange(ref checkedAt, Environment.TickCount64);
-        }
-        return builder!;
-    }
-
-    internal void RefreshSource() => Interlocked.Exchange(ref checkedAt, 0);
 
     private static bool HasPortrait(PreviewCharacter character, string mode) => PreviewCache.ReadPng(character, mode + ".png") is not null;
 
@@ -170,11 +160,16 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
     internal void Respond(object? sender, WebViewWebResourceRequestedEventArgs request)
     {
         var uri = request.Uri;
-        if (!LodestoneApplication.IsLocalWebViewUri(uri) || !uri.AbsolutePath.StartsWith(Root, StringComparison.Ordinal))
+        if (!LodestoneApplication.IsLocalWebViewUri(uri) || !uri.AbsolutePath.StartsWith(root, StringComparison.Ordinal))
             return;
         request.Handled = true;
-        var parts = uri.AbsolutePath[Root.Length..].Split('/');
-        if (parts is ["portrait", var session, var characterId, var revision, "full.png" or "portrait.png"]
+        var parts = uri.AbsolutePath[root.Length..].Split('/');
+        if (wardrobe is not null && parts is ["icons", var itemIcon] && ParseIcon(itemIcon, out var itemIconId) && wardrobe().HasIcon(itemIconId))
+        {
+            request.SetResponse(200, "OK", "image/png", Task.Run(() => source.ReadWardrobeIconAsync(itemIconId)));
+            return;
+        }
+        if (wardrobe is null && parts is ["portrait", var session, var characterId, var revision, "full.png" or "portrait.png"]
             && Guid.TryParseExact(session, "D", out var sessionId) && Guid.TryParseExact(revision, "D", out var revisionId)
             && findCharacter(characterId) is { } portrait && portrait.Session == sessionId && portrait.Revision == revisionId
             && PreviewCache.ReadPng(portrait, parts[4]) is { } png)
@@ -198,9 +193,7 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
                     Reply(request, "image/png", texture);
                     return;
                 }
-                if (parts is [_, "icons", var icon] && icon.EndsWith(".png", StringComparison.Ordinal)
-                    && int.TryParse(icon.AsSpan(0, icon.Length - 4), NumberStyles.None, CultureInfo.InvariantCulture, out var iconId)
-                    && state.Icons.Contains(iconId))
+                if (parts is [_, "icons", var icon] && ParseIcon(icon, out var iconId) && state.Icons.Contains(iconId))
                 {
                     var token = state.Cancellation!.Token;
                     request.SetResponse(200, "OK", "image/png", Task.Run(() => ReadIconAsync(state, iconId, token)));
@@ -209,6 +202,13 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
             }
             request.SetResponse(404, "Not Found", "application/json", Task.FromResult<Stream?>(null));
         }
+    }
+
+    private static bool ParseIcon(string file, out int icon)
+    {
+        icon = 0;
+        return file.EndsWith(".png", StringComparison.Ordinal)
+            && int.TryParse(file.AsSpan(0, file.Length - 4), NumberStyles.None, CultureInfo.InvariantCulture, out icon);
     }
 
     private async Task<Stream?> ReadIconAsync(Prepared state, int icon, CancellationToken token)
@@ -221,8 +221,8 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
             await buildLock.WaitAsync(token);
             try
             {
-                var source = await GetSourceAsync(token);
-                var bytes = await source.ReadIconAsync(icon, token);
+                var (builder, _) = await source.GetAsync(token);
+                var bytes = await builder.ReadIconAsync(icon, token);
                 if (bytes is null)
                     return null;
                 token.ThrowIfCancellationRequested();
@@ -258,7 +258,8 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
     }
 
     private sealed record Prepared(Guid Id, PreviewCharacter Character, byte[] Json,
-        IReadOnlyDictionary<string, byte[]> Textures, HashSet<int> Icons)
+        IReadOnlyDictionary<string, byte[]> Textures, HashSet<int> Icons, IReadOnlyDictionary<string, string>? CoveredSlots = null,
+        IReadOnlySet<string>? AppliedSlots = null)
     {
         internal CancellationTokenSource? Cancellation { get; init; }
     }
@@ -270,4 +271,6 @@ internal sealed record GamePreviewResult(
     [property: JsonPropertyName("iconRoot")] string? IconRoot = null,
     [property: JsonPropertyName("error")] string? Error = null,
     [property: JsonPropertyName("full")] bool Full = false,
-    [property: JsonPropertyName("portrait")] bool Portrait = false);
+    [property: JsonPropertyName("portrait")] bool Portrait = false,
+    [property: JsonPropertyName("coveredSlots")] IReadOnlyDictionary<string, string>? CoveredSlots = null,
+    [property: JsonPropertyName("appliedSlots")] IReadOnlySet<string>? AppliedSlots = null);

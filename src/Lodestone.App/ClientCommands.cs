@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Lodestone.Core.Assets;
 using Lodestone.Core.Auth;
@@ -14,7 +15,9 @@ internal sealed partial class ClientCommands : IDisposable
     private readonly OfficialHomeClient officialHome = new();
     private readonly GameVersionService versions;
     private readonly GameCommands game;
+    private readonly GamePreviewSource previewSource;
     private readonly GamePreview preview;
+    private readonly GamePreview wardrobe;
     private readonly CommunityBrowser browser = new();
     private RisingStonesSession? community;
     private CommunityAccess? communityOwner;
@@ -28,7 +31,9 @@ internal sealed partial class ClientCommands : IDisposable
     {
         versions = new GameVersionService(cdn, Path.Combine(FileSystem.AppDataDirectory, "cdn"));
         game = new GameCommands(versions, GetLobbyVersion, Exd);
-        preview = new GamePreview(cdn, game.FindPreviewCharacter);
+        previewSource = new GamePreviewSource(cdn);
+        preview = new GamePreview(previewSource, game.FindPreviewCharacter, "/_game_preview/");
+        wardrobe = new GamePreview(previewSource, game.FindSelectedPreviewCharacter, "/_wardrobe/", () => Exd.Current.Character.Wardrobe);
         game.SessionChanged += OnGameSessionChanged;
     }
 
@@ -94,12 +99,13 @@ internal sealed partial class ClientCommands : IDisposable
     {
         var result = await game.SelectAsync(id, index, refresh: true);
         if (result.Error is null)
-            preview.RefreshSource();
+            previewSource.Refresh();
         return result;
     }
     public GameResponse ChooseGameCharacter(string id)
     {
         preview.Invalidate();
+        wardrobe.Invalidate();
         return game.ChooseCharacter(id);
     }
     public GameProgress? GetGameProgress(string id) => game.GetProgress(id);
@@ -122,6 +128,7 @@ internal sealed partial class ClientCommands : IDisposable
     private void OnGameSessionChanged()
     {
         preview.Invalidate();
+        wardrobe.Invalidate();
         MainThread.BeginInvokeOnMainThread(UpdateCommunitySession);
     }
 
@@ -172,7 +179,28 @@ internal sealed partial class ClientCommands : IDisposable
     public Task<GamePreviewResult> PrepareGamePreview(string characterId, string requestId) => preview.PrepareAsync(characterId, requestId);
     public bool ReleaseGamePreview(string requestId) => preview.Release(requestId);
     public bool SaveGamePortrait(string requestId, string mode, string png) => preview.SavePortrait(requestId, mode, png);
-    internal void GetGamePreviewResource(object? sender, WebViewWebResourceRequestedEventArgs request) => preview.Respond(sender, request);
+    public Task<WardrobePage> SearchWardrobe(string slot, string query, int page) => Task.Run(() =>
+        Exd.Current.Character.Wardrobe.Search(slot, query, page));
+
+    public Task<GamePreviewResult> PrepareWardrobePreview(string characterId, string requestId, string changes)
+    {
+        try
+        {
+            if (changes is { Length: <= 1024 } && JsonSerializer.Deserialize<WardrobeChange[]>(changes, PreviewCache.Json) is { } outfit)
+                return wardrobe.PrepareAsync(characterId, requestId, outfit);
+        }
+        catch (JsonException) { }
+        return Task.FromResult(new GamePreviewResult(Error: "无法读取试穿组合"));
+    }
+
+    public bool ReleaseWardrobePreview(string requestId) => wardrobe.Release(requestId);
+
+    internal void GetGamePreviewResource(object? sender, WebViewWebResourceRequestedEventArgs request)
+    {
+        preview.Respond(sender, request);
+        if (!request.Handled)
+            wardrobe.Respond(sender, request);
+    }
 
     public int GetLobbyVersion() => Preferences.Default.Get(LobbyVersionSetting, 7500);
 
@@ -266,6 +294,7 @@ internal sealed partial class ClientCommands : IDisposable
         }
         game.SessionChanged -= OnGameSessionChanged;
         preview.Dispose();
+        wardrobe.Dispose();
         game.Dispose();
         Volatile.Write(ref community, null);
         MainThread.BeginInvokeOnMainThread(() => browser.SetSession(null, []));
