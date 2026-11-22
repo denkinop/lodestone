@@ -213,7 +213,7 @@ onBeforeUnmount(() => {
   <section class="hero" aria-label="角色预览">
     <div class="hero-heading">
       <p><UiIcon name="location" :size="15" />{{ character.dc }} <span>/</span> {{ character.world }}</p>
-      <h1>{{ character.name }}</h1>
+      <h2>{{ character.name }}</h2>
     </div>
     <div class="hero-loadout">
       <slot name="main-hand" />
@@ -243,7 +243,7 @@ onBeforeUnmount(() => {
       <slot name="accessories" />
     </div>
     <div class="hero-controls">
-      <div class="hero-segment" aria-label="预览视图">
+      <div class="hero-segment segmented-control" role="group" aria-label="预览视图">
         <button type="button" :aria-pressed="view === 'full'" @click="setView('full')">全身</button>
         <button type="button" :aria-pressed="view === 'portrait'" @click="setView('portrait')">面部</button>
       </div>

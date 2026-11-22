@@ -6,7 +6,7 @@ import UiIcon from './UiIcon.vue'
 
 const props = defineProps<{ now: number }>()
 const weekdays = ['一', '二', '三', '四', '五', '六', '日']
-const colors = ['#4164a5', '#6e8dbd', '#4a81ad', '#5a728f']
+const fallbackColors = ['var(--amber)', 'var(--blue)', 'var(--teal)', 'var(--violet)']
 const today = computed(() => chinaDay(props.now))
 const currentMonth = computed(() => today.value.slice(0, 7))
 const month = ref(currentMonth.value)
@@ -52,7 +52,7 @@ watch([month, request], async ([target], _, onCleanup) => {
     failed.value = result.failed
     activities.value = result.items.map((event, index) => ({
       ...event,
-      color: event.color && /^#[\da-f]{6}$/i.test(event.color) ? event.color : colors[index % colors.length],
+      color: event.color && /^#[\da-f]{6}$/i.test(event.color) ? event.color : fallbackColors[index % fallbackColors.length],
       first: chinaDay(event.start * 1000),
       last: chinaDay(event.end * 1000),
     }))

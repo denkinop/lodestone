@@ -56,3 +56,15 @@ test('forecast includes the in-progress period and clips the final match at 48 h
   assert.equal(matches[0].start, now)
   assert.equal(matches.at(-1).end, end)
 })
+
+test('including recent periods leaves the current weather and future forecast unchanged', () => {
+  const now = Date.parse('2026-11-22T01:18:40Z')
+  const precedingPeriods = 8
+  const forecast = forecastPeriods(southernThanalan.rates, now)
+  const withHistory = forecastPeriods(southernThanalan.rates, now, precedingPeriods)
+
+  assert.equal(withHistory[0].hour, 0)
+  assert.equal(withHistory[0].start, forecast[0].start - precedingPeriods * weatherPeriodMs)
+  assert.equal(withHistory[precedingPeriods - 1].weather, forecast[0].previous)
+  assert.deepEqual(withHistory.slice(precedingPeriods), forecast)
+})

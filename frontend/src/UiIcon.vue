@@ -16,6 +16,7 @@ const paths: Record<string, string> = {
   check: 'm5 12 4 4 10-10',
   swap: 'M4 8h15m-4-4 4 4-4 4M20 16H5m4-4-4 4 4 4',
   home: 'm3 10 9-7 9 7m-16-1v11h5v-6h4v6h5V9',
+  sidebar: 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm5 0v16M6 8h1m-1 4h1',
   calendar: 'M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Zm2-2v4m10-4v4M3 10h18m-14 4h1m3 0h1m3 0h1m-9 3h1m3 0h1',
   news: 'M6 4h14v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8h2m0-4v14a2 2 0 0 0 2 2m2-12h6m-6 4h6m-6 4h4',
   left: 'm14 6-6 6 6 6',

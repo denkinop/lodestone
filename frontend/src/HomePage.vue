@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ActivityCalendar from './ActivityCalendar.vue'
+import PageHeading from './PageHeading.vue'
 import { getOfficialBanners, getOfficialNews, type OfficialBanner, type OfficialNews } from './bridge'
 import { chinaDay, eorzeaTime } from './home-time'
 import UiIcon from './UiIcon.vue'
@@ -94,8 +95,7 @@ onBeforeUnmount(() => clearInterval(ticker))
 
 <template>
   <main class="home-page" id="home">
-    <div class="home-intro">
-      <h1>今日艾欧泽亚</h1>
+    <PageHeading title="首页">
       <div class="eorzea-clock" :class="{ 'is-night': !clock.daylight }">
         <span class="clock-symbol"><UiIcon :name="clock.daylight ? 'sun' : 'moon'" :size="23" /></span>
         <div class="clock-copy">
@@ -103,7 +103,7 @@ onBeforeUnmount(() => clearInterval(ticker))
           <strong>{{ clock.text }} <small>ET</small></strong>
         </div>
       </div>
-    </div>
+    </PageHeading>
 
     <section class="home-banner" aria-label="官方推荐" aria-roledescription="轮播" @keydown.left.prevent="banners.length > 1 && moveBanner(-1)"
       @keydown.right.prevent="banners.length > 1 && moveBanner(1)">
@@ -139,7 +139,7 @@ onBeforeUnmount(() => clearInterval(ticker))
             <span class="home-card-icon"><UiIcon name="news" :size="19" /></span>
             <h2 id="official-news">官方信息</h2>
           </div>
-          <div class="news-filters" aria-label="筛选官方信息">
+          <div class="news-filters segmented-control" role="group" aria-label="筛选官方信息">
             <button v-for="item in filters" :key="item.id" type="button" :aria-pressed="selectedFilter === item.id"
               @click="selectedFilter = item.id; showMore = false">{{ item.title }}</button>
           </div>

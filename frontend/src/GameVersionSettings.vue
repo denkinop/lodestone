@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import UiIcon from './UiIcon.vue'
 import {
   cancelGameVersion, getGameVersionProgress, getLobbyVersion, refreshGameVersion, setLobbyVersion,
   type VersionProgress,
@@ -101,31 +100,34 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="paper settings-panel version-panel" aria-labelledby="version-title">
-    <div class="panel-title">
-      <span class="section-icon"><UiIcon name="settings" :size="18" /></span><h2 id="version-title">高级设置</h2>
-    </div>
-    <form class="version-row" @submit.prevent="save">
-      <label for="lobby-version">大厅服务器版本</label>
-      <input id="lobby-version" v-model.number="lobby" type="number" min="0" max="65535" step="1" required>
-      <button class="secondary" type="submit" :disabled="saving">保存</button>
-      <span v-if="lobbyStatus" role="status">{{ lobbyStatus }}</span>
-    </form>
-    <div class="version-row">
-      <button class="secondary" type="button" :disabled="Boolean(activeRequest)" @click="refresh">检查资源版本</button>
-      <button v-if="activeRequest" class="secondary" type="button" :disabled="cancelling" @click="cancel">取消</button>
-      <span v-if="!activeRequest || !progress" role="status">{{ status }}</span>
-      <template v-else>
-        <progress :aria-label="'正在读取游戏 EXE ' + percentage + '%'" :value="percentage" max="100" />
-        <span>正在读取游戏 EXE · {{ percentage }}%</span>
-      </template>
+  <section class="settings-group" aria-labelledby="version-title">
+    <h2 id="version-title" class="settings-group-heading">高级设置</h2>
+    <div class="paper">
+      <form class="settings-row version-row" @submit.prevent="save">
+        <label for="lobby-version">大厅服务器版本</label>
+        <input id="lobby-version" v-model.number="lobby" type="number" min="0" max="65535" step="1" required>
+        <button class="secondary" type="submit" :disabled="saving">保存</button>
+        <span v-if="lobbyStatus" class="version-status" role="status">{{ lobbyStatus }}</span>
+      </form>
+      <div class="settings-row version-row">
+        <button class="secondary" type="button" :disabled="Boolean(activeRequest)" @click="refresh">检查资源版本</button>
+        <button v-if="activeRequest" class="secondary" type="button" :disabled="cancelling" @click="cancel">取消</button>
+        <span v-if="!activeRequest || !progress" class="version-status" role="status">{{ status }}</span>
+        <template v-else>
+          <progress :aria-label="'正在读取游戏 EXE ' + percentage + '%'" :value="percentage" max="100" />
+          <span class="version-status">正在读取游戏 EXE · {{ percentage }}%</span>
+        </template>
+      </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.version-panel { margin-top: 18px; }
-.version-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
-.version-row input { width: 7rem; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.version-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.version-row label { margin-right: auto; font-size: .92rem; font-weight: 650; }
+.version-row input { width: 5rem; min-height: 42px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface); }
 .version-row progress { width: 8rem; accent-color: var(--blue); }
+.version-status { color: var(--muted); font-size: .85rem; overflow-wrap: anywhere; }
+.version-status:empty { display: none; }
+form.version-row .version-status { flex-basis: 100%; }
 </style>

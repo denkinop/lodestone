@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import AppNavigation from './AppNavigation.vue'
 import CharacterDetails from './CharacterDetails.vue'
 import GameVersionSettings from './GameVersionSettings.vue'
 import GameLogin from './GameLogin.vue'
 import HomePage from './HomePage.vue'
+import PageHeading from './PageHeading.vue'
 import UiIcon from './UiIcon.vue'
 import WeatherPage from './WeatherPage.vue'
 import type { Character } from './character'
@@ -33,6 +35,7 @@ let communityRetry: { id: string; attempts: number; after: number } | undefined
 let syncingCommunity = false
 
 const gameCharacter = computed(() => game.value?.current)
+const navigationCharacterName = computed(() => gameCharacter.value?.name ?? (game.value ? '未选择角色' : '未登录'))
 const characterPrompt = computed(() => restoring.value ? '正在恢复已保存的登录…'
   : signingOut.value ? '正在退出登录…'
     : game.value ? '请在设置中选择角色。' : '请在设置中登录后查看角色信息。')
@@ -263,175 +266,176 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <header class="app-header">
-    <div class="header-content">
-      <button class="brand" type="button" aria-label="掌上艾欧泽亚，返回首页" @click="go('home')">
-        <span class="brand-mark"><UiIcon name="crystal" :size="21" /></span>
-        <span>掌上艾欧泽亚</span>
-      </button>
-      <nav class="app-nav" aria-label="主导航">
-        <button type="button" :aria-current="screen === 'home' ? 'page' : undefined" @click="go('home')">
-          <UiIcon name="home" :size="18" />首页
-        </button>
-        <button type="button" :aria-current="screen === 'profile' ? 'page' : undefined" @click="go('profile')">
-          <UiIcon name="user" :size="18" />角色
-        </button>
-        <button type="button" :aria-current="screen === 'weather' ? 'page' : undefined" @click="go('weather')">
-          <UiIcon name="weather" :size="18" />天气
-        </button>
-        <button type="button" :aria-current="screen === 'settings' || screen === 'choose' ? 'page' : undefined" @click="go('settings')">
-          <UiIcon name="settings" :size="18" />设置
-        </button>
-      </nav>
-    </div>
-  </header>
-
-  <HomePage v-show="screen === 'home'">
-    <template #character>
-      <section class="home-card home-character-panel" aria-labelledby="home-character">
-        <div class="home-card-heading">
-          <span class="home-card-icon"><UiIcon name="user" :size="19" /></span><h2 id="home-character">我的角色</h2>
-        </div>
-        <div v-if="profile" class="home-character-row">
+  <div class="app-shell">
+    <AppNavigation :current="screen === 'choose' ? 'settings' : screen" @navigate="go">
+      <template #character="{ compact }">
+        <div class="navigation-character" :class="{ 'is-compact': compact }" :title="navigationCharacterName">
           <span class="character-avatar">
-            <UiIcon name="user" :size="20" />
-            <img :key="avatar(profile)" :src="avatar(profile)" alt="" hidden @load="updateAvatar" @error="prepareAvatar($event, profile)">
+            <UiIcon name="user" :size="19" />
+            <img v-if="profile" :key="avatar(profile)" :src="avatar(profile)" alt="" hidden
+              @load="updateAvatar" @error="prepareAvatar($event, profile)">
           </span>
-          <div>
-            <strong>{{ profile.name }}</strong>
-            <small>{{ profile.dc }} · {{ profile.world }}</small>
-            <small v-if="profile.jobId || profile.level">{{ lobbyJobName(profile.jobId) }}<template v-if="profile.level"> · {{ profile.level }} 级</template></small>
-          </div>
-          <button type="button" class="home-text-button" @click="go('profile')">查看信息<UiIcon name="right" :size="15" /></button>
+          <span class="navigation-character-name">{{ navigationCharacterName }}</span>
         </div>
-        <div v-else class="profile-prompt">
-          <p role="status">{{ characterPrompt }}</p>
-          <button v-if="!restoring && !signingOut" type="button" class="home-text-button" @click="go('settings')">
-            前往设置<UiIcon name="right" :size="15" />
+      </template>
+    </AppNavigation>
+    <div class="app-content">
+      <HomePage v-show="screen === 'home'">
+        <template #character>
+          <section class="home-card home-character-panel" aria-labelledby="home-character">
+            <div class="home-card-heading">
+              <span class="home-card-icon"><UiIcon name="user" :size="19" /></span><h2 id="home-character">我的角色</h2>
+            </div>
+            <div v-if="profile" class="home-character-row">
+              <span class="character-avatar">
+                <UiIcon name="user" :size="20" />
+                <img :key="avatar(profile)" :src="avatar(profile)" alt="" hidden @load="updateAvatar" @error="prepareAvatar($event, profile)">
+              </span>
+              <div>
+                <strong>{{ profile.name }}</strong>
+                <small>{{ profile.dc }} · {{ profile.world }}</small>
+                <small v-if="profile.jobId || profile.level">{{ lobbyJobName(profile.jobId) }}<template v-if="profile.level"> · {{ profile.level }} 级</template></small>
+              </div>
+              <button type="button" class="home-text-button" @click="go('profile')">查看信息<UiIcon name="right" :size="15" /></button>
+            </div>
+            <div v-else class="profile-prompt">
+              <p role="status">{{ characterPrompt }}</p>
+              <button v-if="!restoring && !signingOut" type="button" class="home-text-button" @click="go('settings')">
+                前往设置<UiIcon name="right" :size="15" />
+              </button>
+            </div>
+          </section>
+        </template>
+      </HomePage>
+
+      <KeepAlive>
+        <WeatherPage v-if="screen === 'weather'" />
+      </KeepAlive>
+
+      <main v-if="screen === 'choose' && game" class="choose-page">
+        <PageHeading title="选择角色">
+          <button type="button" class="secondary" :disabled="lobbyBusy || choosing" @click="backFromChoice">返回设置</button>
+        </PageHeading>
+        <div v-if="game && (game.accounts.length > 1 || !game.cached)" class="account-choice">
+          <label v-if="game.accounts.length" for="service-account">服务账号</label>
+          <select v-if="game.accounts.length" id="service-account" :value="game.selectedIndex ?? ''" :disabled="lobbyBusy || choosing"
+            @change="readLobby(Number(($event.target as HTMLSelectElement).value), false)">
+            <option value="" disabled>请选择服务账号</option>
+            <option v-for="entry in game.accounts" :key="entry.index" :value="entry.index">{{ entry.name || '服务账号 ' + (entry.index + 1) }}</option>
+          </select>
+          <button v-if="(!game.cached && game.selectedIndex !== null) || !game.accounts.length" class="secondary" type="button"
+            :disabled="lobbyBusy" @click="readLobby(game.selectedIndex ?? -1, true)">
+            {{ lobbyBusy ? '正在读取…' : '从 Lobby 读取角色' }}
           </button>
         </div>
-      </section>
-    </template>
-  </HomePage>
+        <p v-if="game?.cached && !list.length" role="status">该服务账号没有角色。</p>
+        <p v-if="status" role="status">{{ status }}</p>
+        <div v-if="list.length" class="paper character-list" role="group" aria-label="角色列表">
+          <button v-for="character in list" :key="character.id" type="button" class="choose-card"
+            :aria-current="profile?.id === character.id ? 'true' : undefined"
+            :class="{ 'current-card': profile?.id === character.id }" :disabled="lobbyBusy || choosing" @click="choose(character)">
+            <span class="character-avatar">
+              <UiIcon name="user" :size="22" />
+              <img :key="avatar(character)" :src="avatar(character)" alt="" hidden @load="updateAvatar" @error="updateAvatar">
+            </span>
+            <span><strong>{{ character.name }}</strong><small>{{ character.world }} · {{ character.race || '未获取' }}</small></span>
+            <UiIcon v-if="profile?.id === character.id" class="active-check" name="check" :size="19" />
+          </button>
+        </div>
+      </main>
 
-  <KeepAlive>
-    <WeatherPage v-if="screen === 'weather'" />
-  </KeepAlive>
-
-  <main v-if="screen === 'choose' && game" class="narrow-page choose-page">
-    <div class="page-heading">
-      <div><h1>选择角色</h1><p>{{ list.length }} 个角色<span v-if="list[0]"> · {{ list[0].dc }}</span></p></div>
-      <button type="button" class="secondary" :disabled="lobbyBusy || choosing" @click="backFromChoice">返回设置</button>
-    </div>
-    <div v-if="game && (game.accounts.length > 1 || !game.cached)" class="account-choice">
-      <label v-if="game.accounts.length" for="service-account">服务账号</label>
-      <select v-if="game.accounts.length" id="service-account" :value="game.selectedIndex ?? ''" :disabled="lobbyBusy || choosing"
-        @change="readLobby(Number(($event.target as HTMLSelectElement).value), false)">
-        <option value="" disabled>请选择服务账号</option>
-        <option v-for="entry in game.accounts" :key="entry.index" :value="entry.index">{{ entry.name || '服务账号 ' + (entry.index + 1) }}</option>
-      </select>
-      <button v-if="(!game.cached && game.selectedIndex !== null) || !game.accounts.length" class="secondary" type="button"
-        :disabled="lobbyBusy" @click="readLobby(game.selectedIndex ?? -1, true)">
-        {{ lobbyBusy ? '正在读取…' : '从 Lobby 读取角色' }}
-      </button>
-    </div>
-    <p v-if="game?.cached && !list.length" role="status">该服务账号没有角色。</p>
-    <p v-if="status" role="status">{{ status }}</p>
-    <div class="choose-grid">
-      <button v-for="character in list" :key="character.id" type="button" class="paper choose-card"
-        :class="{ 'current-card': profile?.id === character.id }" :disabled="lobbyBusy || choosing" @click="choose(character)">
-        <span class="character-avatar">
-          <UiIcon name="user" :size="22" />
-          <img :key="avatar(character)" :src="avatar(character)" alt="" hidden @load="updateAvatar" @error="updateAvatar">
-        </span>
-        <span><strong>{{ character.name }}</strong><small>{{ character.world }} · {{ character.race || '未获取' }}</small></span>
-        <UiIcon v-if="profile?.id === character.id" class="active-check" name="check" :size="19" />
-      </button>
-    </div>
-  </main>
-
-  <main v-if="profile && (screen === 'profile' || preparingPortrait === profile.portraitRoot)"
-    v-show="screen === 'profile'" class="profile-page">
-    <CharacterDetails :key="profileKey" :character="profile" :active="screen === 'profile'"
-      @portrait-start="startPortrait" @portrait-ready="showPortrait" @portrait-finish="finishPortrait" />
-  </main>
-  <main v-else-if="screen === 'profile'" class="narrow-page settings-page">
-    <div class="page-heading"><h1>角色信息</h1></div>
-    <section class="paper settings-panel">
-      <div class="profile-prompt">
-        <p role="status">{{ characterPrompt }}</p>
-        <button v-if="!restoring && !signingOut" type="button" class="secondary" @click="go('settings')">前往设置</button>
-      </div>
-    </section>
-  </main>
-
-  <main v-if="screen === 'settings' || showLogin" v-show="screen === 'settings'" class="narrow-page settings-page">
-    <div class="page-heading"><div><h1>设置</h1></div></div>
-    <section class="paper settings-panel account-panel" aria-labelledby="account-heading">
-      <div class="panel-title"><span class="section-icon"><UiIcon name="user" :size="18" /></span><h2 id="account-heading">账号绑定</h2></div>
-      <section class="account-provider" aria-labelledby="sdo-provider">
-        <div class="account-provider-row">
-          <div class="account-provider-copy">
-            <h3 id="sdo-provider">盛趣账号</h3>
-            <p v-if="!showLogin" role="status">{{ game ? '已登录' : restoring || signingOut ? characterPrompt : '登录后即可查看和切换角色。' }}</p>
+      <main v-if="screen === 'profile' || (profile && preparingPortrait === profile.portraitRoot)"
+        v-show="screen === 'profile'" class="profile-page">
+        <PageHeading title="角色信息" />
+        <div v-if="profile" class="profile-layout">
+          <CharacterDetails :key="profileKey" :character="profile" :active="screen === 'profile'"
+            @portrait-start="startPortrait" @portrait-ready="showPortrait" @portrait-finish="finishPortrait" />
+        </div>
+        <section v-else class="paper settings-panel">
+          <div class="profile-prompt">
+            <p role="status">{{ characterPrompt }}</p>
+            <button v-if="!restoring && !signingOut" type="button" class="secondary" @click="go('settings')">前往设置</button>
           </div>
-          <button v-if="game" class="secondary" type="button" :disabled="lobbyBusy || choosing" @click="logout">退出登录</button>
-          <button v-else-if="!showLogin" class="primary" type="button" :disabled="restoring || signingOut" @click="showLogin = true">登录</button>
-        </div>
-        <GameLogin v-if="showLogin" class="account-login" :logout-error="status" @authorized="signedIn">
-          <template #actions>
-            <button class="secondary" type="button" @click="showLogin = false">关闭登录</button>
-          </template>
-        </GameLogin>
-        <p v-else-if="!game && status" class="account-status" role="status">{{ status }}</p>
-      </section>
-      <section class="account-provider" aria-labelledby="fflogs-provider" hidden>
-        <div class="account-provider-row">
-          <h3 id="fflogs-provider">FFLOGS</h3>
-          <p>待接入</p>
-        </div>
-      </section>
-    </section>
-    <section v-if="game" class="paper settings-panel account-panel" aria-labelledby="active-character">
-      <div class="panel-title"><span class="section-icon"><UiIcon name="user" :size="18" /></span><h2 id="active-character">当前角色</h2></div>
-      <div class="settings-character">
-        <template v-if="profile">
-          <span class="character-avatar">
-            <UiIcon name="user" :size="22" />
-            <img :key="avatar(profile)" :src="avatar(profile)" alt="" hidden @load="updateAvatar" @error="updateAvatar">
-          </span>
-          <div><strong>{{ profile.name }}</strong><small>{{ profile.dc }} · {{ profile.world }}</small></div>
-        </template>
-        <p v-else>已登录，请选择角色。</p>
-        <button type="button" class="secondary switch-button" :disabled="lobbyBusy || choosing" @click="status = ''; go('choose')">
-          <UiIcon name="swap" :size="17" />{{ profile ? '切换角色' : '选择角色' }}
-        </button>
-      </div>
-      <div v-if="profile" class="settings-actions">
-        <button type="button" class="secondary" :disabled="lobbyBusy || choosing" @click="readLobby(game.currentIndex ?? -1, true)">
-          {{ lobbyBusy ? '正在刷新角色信息…' : '刷新角色信息' }}
-        </button>
-      </div>
-      <p v-if="status" class="account-status" role="status">{{ status }}</p>
-    </section>
-    <GameVersionSettings v-if="screen === 'settings'" />
-  </main>
+        </section>
+      </main>
+
+      <main v-if="screen === 'settings' || showLogin" v-show="screen === 'settings'" class="settings-page">
+        <PageHeading title="设置" />
+        <section class="settings-group" aria-labelledby="account-heading">
+          <h2 id="account-heading" class="settings-group-heading">账号绑定</h2>
+          <div class="paper">
+            <section aria-labelledby="sdo-provider">
+              <div class="settings-row account-provider-row">
+                <span class="section-icon"><UiIcon name="user" :size="18" /></span>
+                <div class="account-provider-copy">
+                  <h3 id="sdo-provider">盛趣账号</h3>
+                  <p v-if="!showLogin" role="status">{{ game ? '已登录' : restoring || signingOut ? characterPrompt : '登录后即可查看和切换角色。' }}</p>
+                </div>
+                <button v-if="game" class="secondary" type="button" :disabled="lobbyBusy || choosing" @click="logout">退出登录</button>
+                <button v-else-if="!showLogin" class="primary" type="button" :disabled="restoring || signingOut" @click="showLogin = true">登录</button>
+              </div>
+              <GameLogin v-if="showLogin" class="settings-row" :logout-error="status" @authorized="signedIn">
+                <template #actions>
+                  <button class="secondary" type="button" @click="showLogin = false">关闭登录</button>
+                </template>
+              </GameLogin>
+              <p v-else-if="!game && status" class="settings-row account-status" role="status">{{ status }}</p>
+            </section>
+            <section class="settings-row" aria-labelledby="fflogs-provider" hidden>
+              <div class="account-provider-row">
+                <h3 id="fflogs-provider">FFLOGS</h3>
+                <p>待接入</p>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section v-if="game" class="settings-group" aria-labelledby="active-character">
+          <h2 id="active-character" class="settings-group-heading">当前角色</h2>
+          <div class="paper">
+            <div class="settings-row settings-character">
+              <template v-if="profile">
+                <span class="character-avatar">
+                  <UiIcon name="user" :size="22" />
+                  <img :key="avatar(profile)" :src="avatar(profile)" alt="" hidden @load="updateAvatar" @error="updateAvatar">
+                </span>
+                <div><strong>{{ profile.name }}</strong><small>{{ profile.dc }} · {{ profile.world }}</small></div>
+              </template>
+              <p v-else>已登录，请选择角色。</p>
+              <button type="button" class="secondary switch-button" :disabled="lobbyBusy || choosing" @click="status = ''; go('choose')">
+                <UiIcon name="swap" :size="17" />{{ profile ? '切换角色' : '选择角色' }}
+              </button>
+            </div>
+            <div v-if="profile" class="settings-row">
+              <button type="button" class="secondary" :disabled="lobbyBusy || choosing" @click="readLobby(game.currentIndex ?? -1, true)">
+                {{ lobbyBusy ? '正在刷新角色信息…' : '刷新角色信息' }}
+              </button>
+            </div>
+            <p v-if="status" class="settings-row account-status" role="status">{{ status }}</p>
+          </div>
+        </section>
+        <GameVersionSettings v-if="screen === 'settings'" />
+      </main>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.account-choice, .settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-block: 12px; }
-.account-choice select { min-width: 12rem; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; }
+.account-choice { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-block: 12px; }
+.account-choice select { min-width: 12rem; min-height: 40px; padding: .45rem; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--paper); }
 .character-avatar { display: grid; place-items: center; }
-.character-avatar > svg { color: #edf5ff; }
+.character-avatar > svg { color: var(--violet); }
 .character-avatar:has(img:not([hidden])) > svg { visibility: hidden; }
 .character-avatar img[hidden] { display: none; }
+.navigation-character { display: flex; align-items: center; min-width: 0; gap: 9px; padding: 4px; }
+.navigation-character .character-avatar { width: 34px; height: 34px; border-radius: 50%; }
+.navigation-character-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .92rem; font-weight: 760; }
+.navigation-character.is-compact .navigation-character-name { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); }
 .home-character-row .character-avatar { width: 42px; height: 42px; }
-.account-provider + .account-provider { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
-.account-provider-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.account-provider-row { display: flex; align-items: center; gap: 12px; }
 .account-provider-row h3 { font-size: 1rem; }
 .account-provider-row p { color: var(--muted); font-size: .875rem; }
-.account-provider-row button { flex-shrink: 0; }
+.account-provider-row .section-icon, .account-provider-row button { flex: none; }
+.account-provider-row button { margin-left: auto; }
 .account-provider-copy p { margin-top: 4px; }
-.account-login { margin-top: 12px; }
-.account-status { margin-top: 12px; color: var(--muted); font-size: .875rem; }
+.account-status { color: var(--muted); font-size: .875rem; }
 </style>

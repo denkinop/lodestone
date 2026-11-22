@@ -29,12 +29,12 @@ export function forecastTarget(timestamp: number) {
   return ((mixed ^ (mixed >>> 8)) >>> 0) % 100
 }
 
-export function forecastPeriods(rates: readonly WeatherRate[], now: number): WeatherPeriod[] {
+export function forecastPeriods(rates: readonly WeatherRate[], now: number, precedingPeriods = 0): WeatherPeriod[] {
   const weatherAt = (time: number) => {
     const target = forecastTarget(time)
     return rates.find(rate => target < rate.upper)!.weather
   }
-  const first = Math.floor(now / weatherPeriodMs) * weatherPeriodMs
+  const first = (Math.floor(now / weatherPeriodMs) - precedingPeriods) * weatherPeriodMs
   let previous = weatherAt(first - weatherPeriodMs)
   const periods: WeatherPeriod[] = []
   for (let start = first; start < now + forecastDurationMs; start += weatherPeriodMs) {

@@ -126,23 +126,29 @@ onBeforeUnmount(() => {
 <template>
   <div aria-label="盛趣登录">
     <form class="game-form" @submit.prevent="login()">
-      <label for="game-area">大区</label>
-      <select id="game-area" v-model="area" :disabled="Boolean(active) || checkingSaved || loadingAreas" required>
-        <option :value="undefined" disabled>{{ loadingAreas ? '正在读取大区…' : '请选择大区' }}</option>
-        <option v-for="option in areas" :key="option.id" :value="option.id">{{ option.name }}</option>
-      </select>
+      <div class="game-field">
+        <label for="game-area">大区</label>
+        <select id="game-area" v-model="area" :disabled="Boolean(active) || checkingSaved || loadingAreas" required>
+          <option :value="undefined" disabled>{{ loadingAreas ? '正在读取大区…' : '请选择大区' }}</option>
+          <option v-for="option in areas" :key="option.id" :value="option.id">{{ option.name }}</option>
+        </select>
+      </div>
       <button v-if="!areas.length && !checkingSaved && !loadingAreas" class="secondary" type="button" @click="loadAreas()">重新读取大区</button>
       <div v-if="savedArea !== null" class="game-actions">
         <button class="secondary" type="button" :disabled="Boolean(active)" @click="login('saved')">使用已保存登录</button>
         <button class="secondary" type="button" :disabled="Boolean(active)" @click="forget">清除已保存登录</button>
       </div>
-      <label for="login-mode">登录方式</label>
-      <select id="login-mode" v-model="mode" :disabled="Boolean(active)">
-        <option value="phone">叨鱼确认</option>
-        <option value="scan">二维码</option>
-      </select>
-      <label v-if="mode === 'phone'" for="sdo-account">盛趣账号</label>
-      <input v-if="mode === 'phone'" id="sdo-account" v-model="account" :disabled="Boolean(active)" autocomplete="off" maxlength="128" required>
+      <div class="game-field">
+        <label for="login-mode">登录方式</label>
+        <select id="login-mode" v-model="mode" :disabled="Boolean(active)">
+          <option value="phone">叨鱼确认</option>
+          <option value="scan">二维码</option>
+        </select>
+      </div>
+      <div v-if="mode === 'phone'" class="game-field">
+        <label for="sdo-account">盛趣账号</label>
+        <input id="sdo-account" v-model="account" :disabled="Boolean(active)" autocomplete="off" maxlength="128" required>
+      </div>
       <label class="game-remember"><input v-model="remember" type="checkbox" :disabled="Boolean(active)"> 在此设备保存登录状态</label>
       <div class="game-actions">
         <button class="primary" type="submit" :disabled="Boolean(active) || checkingSaved || loadingAreas || area === undefined">
@@ -161,9 +167,18 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.game-form { display: grid; gap: 10px; justify-items: start; }
-.game-form input:not([type=checkbox]), .game-form select { min-width: 12rem; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; }
-.game-remember { display: flex; align-items: center; gap: .4rem; }
+.game-form { display: grid; gap: 10px; }
+.game-field { display: grid; grid-template-columns: 5.25rem minmax(0, 1fr); align-items: center; gap: 8px; font-size: .92rem; }
+.game-field input, .game-field select {
+  width: min(100%, 21rem);
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+}
+.game-remember { display: flex; align-items: center; gap: .4rem; min-height: 34px; color: var(--muted); font-size: .875rem; }
+.game-remember input { accent-color: var(--blue); }
 .game-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .game-progress { margin-top: 16px; }
 .game-progress img { display: block; margin-block: 8px; image-rendering: pixelated; }
