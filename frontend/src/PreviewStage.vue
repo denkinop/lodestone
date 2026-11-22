@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { prepareGamePreview, releaseGamePreview, saveGamePortrait, type GameGear } from './bridge'
 import type { Character } from './character'
 import { jobIcon, jobName, lobbyJobIcon, lobbyJobName } from './jobs'
 import { portraitPng } from './portrait-export'
 import UiIcon from './UiIcon.vue'
 
-const props = defineProps<{ character: Character }>()
-const emit = defineEmits<{ resources: [iconRoot: string] }>()
+const props = defineProps<{ character: Character; active: boolean }>()
+const emit = defineEmits<{
+  resources: [iconRoot: string]
+  portraitStart: [root: string]
+  portraitReady: [root: string, source: string]
+  portraitFinish: [root: string]
+}>()
 type View = 'full' | 'portrait'
 type Viewer = import('./renderer/viewer.js').Viewer
 type Resources = { scene: string; textureRoot: string }
@@ -80,13 +85,20 @@ async function renderPortraits() {
   if (!appearance) return
   const signal = lifetime.signal
   capturing.value = true
+  emit('portraitStart', portraitRoot)
   message.value = ''
+  function setPortrait(mode: View, png?: string) {
+    const url = portraitRoot + mode + '.png'
+    const source = png ?? (mode === 'portrait' ? `${url}?capture=${nativeRequest}` : url)
+    portraits.value[mode] = source
+    if (mode === 'portrait') emit('portraitReady', portraitRoot, source)
+  }
   let captureViewer: Viewer | undefined
   try {
     const resources = await prepareGame()
     if (signal.aborted) return
     for (const mode of ['full', 'portrait'] as const)
-      if (resources[mode]) portraits.value[mode] = portraitRoot + mode + '.png'
+      if (resources[mode]) setPortrait(mode)
     const scene = await loadScene(resources, signal)
     if (signal.aborted) return
     loadedSlots.value = scene.gear.filter((item: GameGear) => item.loaded).map((item: GameGear) => item.slot)
@@ -104,13 +116,15 @@ async function renderPortraits() {
       captureViewer.render()
       const png = captureViewer.canvas.toDataURL('image/png')
       const saved = await saveGamePortrait(nativeRequest, mode, png).catch(() => false)
-      if (!signal.aborted) portraits.value[mode] = saved ? portraitRoot + mode + '.png' : png
+      if (signal.aborted) return
+      setPortrait(mode, saved ? undefined : png)
     }
   } catch (error) {
     if (!signal.aborted) message.value = error instanceof Error ? error.message : '无法生成角色图片'
   } finally {
     captureViewer?.dispose()
     capturing.value = false
+    if (!signal.aborted) emit('portraitFinish', portraitRoot)
   }
 }
 
@@ -123,6 +137,8 @@ function stopLive() {
   busy.value = false
 }
 
+watch(() => props.active, active => { if (!active) stopLive() })
+
 async function toggleLive() {
   if (live.value) {
     stopLive()
@@ -130,7 +146,7 @@ async function toggleLive() {
   }
   if (capturing.value) return
   if (!portraits.value.full) await renderPortraits()
-  if (lifetime.signal.aborted) return
+  if (!props.active || lifetime.signal.aborted) return
   message.value = ''
   live.value = true
   busy.value = true
@@ -248,8 +264,10 @@ onBeforeUnmount(() => {
         :disabled="view === 'portrait'" :aria-pressed="!hideHelmet && view !== 'portrait'"
         @click="hideHelmet = !hideHelmet; viewer?.setHidden('head', hideHelmet)">显示头部装备</button>
     </div>
-    <div v-if="capturing" class="portrait-capture" aria-hidden="true"><canvas ref="offscreen"></canvas></div>
   </section>
+  <Teleport to="body">
+    <div v-if="capturing" class="portrait-capture" aria-hidden="true"><canvas ref="offscreen"></canvas></div>
+  </Teleport>
 </template>
 
 <style scoped>

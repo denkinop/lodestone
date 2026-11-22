@@ -1,30 +1,41 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import CharacterDetails from './CharacterDetails.vue'
 import GameVersionSettings from './GameVersionSettings.vue'
 import GameLogin from './GameLogin.vue'
+import HomePage from './HomePage.vue'
 import UiIcon from './UiIcon.vue'
+import WeatherPage from './WeatherPage.vue'
 import type { Character } from './character'
-import { communityJobProgress } from './jobs'
+import { communityJobProgress, lobbyJobName } from './jobs'
 import {
-  chooseGameCharacter, getCommunityStatus, refreshLobby, selectCommunityCharacter,
+  beginGameLogin, cancelGameOperation, chooseGameCharacter, getCommunityStatus, getSavedGameArea, refreshLobby, selectCommunityCharacter,
   selectServiceAccount, signOutGame, type CommunityStatus, type GameCharacter, type GameResponse,
 } from './bridge'
 
-type Screen = 'login' | 'choose' | 'profile' | 'settings'
-const screen = ref<Screen>('login')
+type Screen = 'home' | 'choose' | 'profile' | 'weather' | 'settings'
+const screen = ref<Screen>('home')
 const game = ref<GameResponse>()
 const community = ref<CommunityStatus>()
 const status = ref('')
 const choosing = ref(false)
 const lobbyBusy = ref(false)
 const signingOut = ref(false)
+const restoring = ref(true)
+const showLogin = ref(false)
+const preparingPortrait = ref<string>()
+const currentAvatar = ref<{ root: string; source: string }>()
+let attemptedPortrait: string | undefined
+let restoreRequest: string | undefined
 let poll: ReturnType<typeof setTimeout> | undefined
 let generation = 0
 let communityRetry: { id: string; attempts: number; after: number } | undefined
 let syncingCommunity = false
 
 const gameCharacter = computed(() => game.value?.current)
+const characterPrompt = computed(() => restoring.value ? '正在恢复已保存的登录…'
+  : signingOut.value ? '正在退出登录…'
+    : game.value ? '请在设置中选择角色。' : '请在设置中登录后查看角色信息。')
 const cachedProfile = computed(() => gameCharacter.value ? toProfile(gameCharacter.value) : undefined)
 const communityJobs = computed(() => {
   const character = cachedProfile.value
@@ -40,6 +51,12 @@ const list = computed(() => game.value?.characters.map(toProfile) ?? [])
 const profileKey = computed(() => {
   const character = gameCharacter.value
   return character ? `${character.id}:${character.revision}` : undefined
+})
+
+watch(() => gameCharacter.value?.portraitRoot, () => {
+  attemptedPortrait = undefined
+  preparingPortrait.value = undefined
+  currentAvatar.value = undefined
 })
 
 function toProfile(character: GameCharacter): Character {
@@ -64,11 +81,32 @@ function toProfile(character: GameCharacter): Character {
 }
 
 function avatar(character: Character) {
-  return character.portraitRoot + 'portrait.png'
+  return currentAvatar.value?.root === character.portraitRoot
+    ? currentAvatar.value.source : character.portraitRoot + 'portrait.png'
 }
 
 function updateAvatar(event: Event) {
   if (event.currentTarget instanceof HTMLImageElement) event.currentTarget.hidden = event.type === 'error'
+}
+
+function prepareAvatar(event: Event, character: Character) {
+  updateAvatar(event)
+  if (character.appearance && attemptedPortrait !== character.portraitRoot)
+    startPortrait(character.portraitRoot)
+}
+
+function startPortrait(root: string) {
+  if (gameCharacter.value?.portraitRoot !== root) return
+  attemptedPortrait = root
+  preparingPortrait.value = root
+}
+
+function showPortrait(root: string, source: string) {
+  if (gameCharacter.value?.portraitRoot === root) currentAvatar.value = { root, source }
+}
+
+function finishPortrait(root: string) {
+  if (preparingPortrait.value === root) preparingPortrait.value = undefined
 }
 
 function go(next: Screen) {
@@ -79,12 +117,35 @@ function go(next: Screen) {
 function authorized(result: GameResponse) {
   game.value = result
   status.value = result.notice ?? ''
-  go(result.current ? 'profile' : 'choose')
   clearTimeout(poll)
   const current = ++generation
   communityRetry = undefined
   community.value = undefined
   void pollCommunity(current)
+}
+
+function signedIn(result: GameResponse) {
+  showLogin.value = false
+  authorized(result)
+  if (!result.current && screen.value === 'settings') go('choose')
+}
+
+async function restoreLogin() {
+  const token = generation
+  try {
+    const area = await getSavedGameArea()
+    if (area === null || token !== generation) return
+    restoreRequest = crypto.randomUUID()
+    const result = await beginGameLogin(restoreRequest, 'saved', '', area, false)
+    if (token !== generation) return
+    if (result.error) status.value = result.error
+    else authorized(result)
+  } catch {
+    if (token === generation && restoreRequest) status.value = '无法打开已保存的角色信息'
+  } finally {
+    restoreRequest = undefined
+    restoring.value = false
+  }
 }
 
 async function pollCommunity(token: number) {
@@ -138,7 +199,7 @@ async function choose(character: Character) {
     }
     game.value = result
     communityRetry = undefined
-    go('profile')
+    if (screen.value === 'choose') go('profile')
     void syncCommunity()
   } catch {
     if (token === generation) status.value = '无法选择角色'
@@ -161,6 +222,7 @@ async function readLobby(index: number, refresh: boolean) {
       return
     }
     game.value = result
+    status.value = result.notice ?? ''
     if (screen.value === 'settings') go(result.current ? 'profile' : 'choose')
   } catch {
     if (token === generation) status.value = '无法读取角色信息'
@@ -176,52 +238,90 @@ async function logout() {
   clearTimeout(poll)
   syncingCommunity = false
   status.value = ''
+  game.value = undefined
+  community.value = undefined
   try {
     if (!await signOutGame()) status.value = '无法清除本机保存的登录状态'
   } catch {
     status.value = '无法确认本机登录状态已清除'
   } finally {
     signingOut.value = false
-    game.value = undefined
-    community.value = undefined
-    go('login')
   }
 }
 
 function backFromChoice() {
   status.value = ''
-  if (profile.value) go('settings')
-  else void logout()
+  go('settings')
 }
 
-onBeforeUnmount(() => { generation++; clearTimeout(poll) })
+onMounted(() => { void restoreLogin() })
+onBeforeUnmount(() => {
+  generation++
+  clearTimeout(poll)
+  if (restoreRequest) void cancelGameOperation(restoreRequest).catch(() => {})
+})
 </script>
 
 <template>
   <header class="app-header">
     <div class="header-content">
-      <component :is="game ? 'button' : 'div'" class="brand" :type="game ? 'button' : undefined"
-        :aria-label="profile ? '返回角色主页' : undefined" @click="game && go(profile ? 'profile' : 'choose')">
+      <button class="brand" type="button" aria-label="掌上艾欧泽亚，返回首页" @click="go('home')">
         <span class="brand-mark"><UiIcon name="crystal" :size="21" /></span>
-        <span>艾欧泽亚档案</span>
-      </component>
-      <nav v-if="profile" class="app-nav" aria-label="主导航">
+        <span>掌上艾欧泽亚</span>
+      </button>
+      <nav class="app-nav" aria-label="主导航">
+        <button type="button" :aria-current="screen === 'home' ? 'page' : undefined" @click="go('home')">
+          <UiIcon name="home" :size="18" />首页
+        </button>
         <button type="button" :aria-current="screen === 'profile' ? 'page' : undefined" @click="go('profile')">
-          <UiIcon name="user" :size="17" />角色主页
+          <UiIcon name="user" :size="18" />角色
+        </button>
+        <button type="button" :aria-current="screen === 'weather' ? 'page' : undefined" @click="go('weather')">
+          <UiIcon name="weather" :size="18" />天气
         </button>
         <button type="button" :aria-current="screen === 'settings' || screen === 'choose' ? 'page' : undefined" @click="go('settings')">
-          <UiIcon name="settings" :size="17" />设置
+          <UiIcon name="settings" :size="18" />设置
         </button>
       </nav>
     </div>
   </header>
 
-  <GameLogin v-if="screen === 'login'" :logout-error="status" @authorized="authorized" />
+  <HomePage v-show="screen === 'home'">
+    <template #character>
+      <section class="home-card home-character-panel" aria-labelledby="home-character">
+        <div class="home-card-heading">
+          <span class="home-card-icon"><UiIcon name="user" :size="19" /></span><h2 id="home-character">我的角色</h2>
+        </div>
+        <div v-if="profile" class="home-character-row">
+          <span class="character-avatar">
+            <UiIcon name="user" :size="20" />
+            <img :key="avatar(profile)" :src="avatar(profile)" alt="" hidden @load="updateAvatar" @error="prepareAvatar($event, profile)">
+          </span>
+          <div>
+            <strong>{{ profile.name }}</strong>
+            <small>{{ profile.dc }} · {{ profile.world }}</small>
+            <small v-if="profile.jobId || profile.level">{{ lobbyJobName(profile.jobId) }}<template v-if="profile.level"> · {{ profile.level }} 级</template></small>
+          </div>
+          <button type="button" class="home-text-button" @click="go('profile')">查看信息<UiIcon name="right" :size="15" /></button>
+        </div>
+        <div v-else class="profile-prompt">
+          <p role="status">{{ characterPrompt }}</p>
+          <button v-if="!restoring && !signingOut" type="button" class="home-text-button" @click="go('settings')">
+            前往设置<UiIcon name="right" :size="15" />
+          </button>
+        </div>
+      </section>
+    </template>
+  </HomePage>
 
-  <main v-else-if="screen === 'choose'" class="narrow-page choose-page">
+  <KeepAlive>
+    <WeatherPage v-if="screen === 'weather'" />
+  </KeepAlive>
+
+  <main v-if="screen === 'choose' && game" class="narrow-page choose-page">
     <div class="page-heading">
       <div><h1>选择角色</h1><p>{{ list.length }} 个角色<span v-if="list[0]"> · {{ list[0].dc }}</span></p></div>
-      <button type="button" class="secondary" :disabled="signingOut" @click="backFromChoice">{{ profile ? '返回设置' : '返回登录' }}</button>
+      <button type="button" class="secondary" :disabled="lobbyBusy || choosing" @click="backFromChoice">返回设置</button>
     </div>
     <div v-if="game && (game.accounts.length > 1 || !game.cached)" class="account-choice">
       <label v-if="game.accounts.length" for="service-account">服务账号</label>
@@ -250,42 +350,88 @@ onBeforeUnmount(() => { generation++; clearTimeout(poll) })
     </div>
   </main>
 
-  <main v-else-if="screen === 'profile' && profile" class="profile-page">
-    <CharacterDetails :key="profileKey" :character="profile" />
+  <main v-if="profile && (screen === 'profile' || preparingPortrait === profile.portraitRoot)"
+    v-show="screen === 'profile'" class="profile-page">
+    <CharacterDetails :key="profileKey" :character="profile" :active="screen === 'profile'"
+      @portrait-start="startPortrait" @portrait-ready="showPortrait" @portrait-finish="finishPortrait" />
   </main>
-
-  <main v-else-if="screen === 'settings' && profile" class="narrow-page settings-page">
-    <div class="page-heading"><div><h1>设置</h1></div></div>
-    <section class="paper settings-panel" aria-labelledby="active-character">
-      <div class="panel-title"><span class="section-icon"><UiIcon name="user" :size="18" /></span><h2 id="active-character">当前角色</h2></div>
-      <div class="settings-character">
-        <span class="character-avatar">
-          <UiIcon name="user" :size="22" />
-          <img :key="avatar(profile)" :src="avatar(profile)" alt="" hidden @load="updateAvatar" @error="updateAvatar">
-        </span>
-        <div><strong>{{ profile.name }}</strong><small>{{ profile.dc }} · {{ profile.world }}</small></div>
-        <button type="button" class="secondary switch-button" :disabled="lobbyBusy" @click="status = ''; go('choose')">
-          <UiIcon name="swap" :size="17" />切换角色
-        </button>
-      </div>
-      <div v-if="game" class="settings-actions">
-        <button type="button" class="secondary" :disabled="lobbyBusy" @click="readLobby(game.currentIndex ?? -1, true)">
-          {{ lobbyBusy ? '正在刷新角色信息…' : '刷新角色信息' }}
-        </button>
-        <p v-if="status" role="status">{{ status }}</p>
+  <main v-else-if="screen === 'profile'" class="narrow-page settings-page">
+    <div class="page-heading"><h1>角色信息</h1></div>
+    <section class="paper settings-panel">
+      <div class="profile-prompt">
+        <p role="status">{{ characterPrompt }}</p>
+        <button v-if="!restoring && !signingOut" type="button" class="secondary" @click="go('settings')">前往设置</button>
       </div>
     </section>
-    <GameVersionSettings />
-    <button class="secondary exit-button" type="button" :disabled="signingOut" @click="logout">退出登录</button>
   </main>
 
-  <main v-else class="error-screen" role="status">正在载入角色…</main>
+  <main v-if="screen === 'settings' || showLogin" v-show="screen === 'settings'" class="narrow-page settings-page">
+    <div class="page-heading"><div><h1>设置</h1></div></div>
+    <section class="paper settings-panel account-panel" aria-labelledby="account-heading">
+      <div class="panel-title"><span class="section-icon"><UiIcon name="user" :size="18" /></span><h2 id="account-heading">账号绑定</h2></div>
+      <section class="account-provider" aria-labelledby="sdo-provider">
+        <div class="account-provider-row">
+          <div class="account-provider-copy">
+            <h3 id="sdo-provider">盛趣账号</h3>
+            <p v-if="!showLogin" role="status">{{ game ? '已登录' : restoring || signingOut ? characterPrompt : '登录后即可查看和切换角色。' }}</p>
+          </div>
+          <button v-if="game" class="secondary" type="button" :disabled="lobbyBusy || choosing" @click="logout">退出登录</button>
+          <button v-else-if="!showLogin" class="primary" type="button" :disabled="restoring || signingOut" @click="showLogin = true">登录</button>
+        </div>
+        <GameLogin v-if="showLogin" class="account-login" :logout-error="status" @authorized="signedIn">
+          <template #actions>
+            <button class="secondary" type="button" @click="showLogin = false">关闭登录</button>
+          </template>
+        </GameLogin>
+        <p v-else-if="!game && status" class="account-status" role="status">{{ status }}</p>
+      </section>
+      <section class="account-provider" aria-labelledby="fflogs-provider" hidden>
+        <div class="account-provider-row">
+          <h3 id="fflogs-provider">FFLOGS</h3>
+          <p>待接入</p>
+        </div>
+      </section>
+    </section>
+    <section v-if="game" class="paper settings-panel account-panel" aria-labelledby="active-character">
+      <div class="panel-title"><span class="section-icon"><UiIcon name="user" :size="18" /></span><h2 id="active-character">当前角色</h2></div>
+      <div class="settings-character">
+        <template v-if="profile">
+          <span class="character-avatar">
+            <UiIcon name="user" :size="22" />
+            <img :key="avatar(profile)" :src="avatar(profile)" alt="" hidden @load="updateAvatar" @error="updateAvatar">
+          </span>
+          <div><strong>{{ profile.name }}</strong><small>{{ profile.dc }} · {{ profile.world }}</small></div>
+        </template>
+        <p v-else>已登录，请选择角色。</p>
+        <button type="button" class="secondary switch-button" :disabled="lobbyBusy || choosing" @click="status = ''; go('choose')">
+          <UiIcon name="swap" :size="17" />{{ profile ? '切换角色' : '选择角色' }}
+        </button>
+      </div>
+      <div v-if="profile" class="settings-actions">
+        <button type="button" class="secondary" :disabled="lobbyBusy || choosing" @click="readLobby(game.currentIndex ?? -1, true)">
+          {{ lobbyBusy ? '正在刷新角色信息…' : '刷新角色信息' }}
+        </button>
+      </div>
+      <p v-if="status" class="account-status" role="status">{{ status }}</p>
+    </section>
+    <GameVersionSettings v-if="screen === 'settings'" />
+  </main>
 </template>
 
 <style scoped>
 .account-choice, .settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-block: 12px; }
 .account-choice select { min-width: 12rem; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; }
 .character-avatar { display: grid; place-items: center; }
+.character-avatar > svg { color: #edf5ff; }
 .character-avatar:has(img:not([hidden])) > svg { visibility: hidden; }
 .character-avatar img[hidden] { display: none; }
+.home-character-row .character-avatar { width: 42px; height: 42px; }
+.account-provider + .account-provider { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.account-provider-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.account-provider-row h3 { font-size: 1rem; }
+.account-provider-row p { color: var(--muted); font-size: .875rem; }
+.account-provider-row button { flex-shrink: 0; }
+.account-provider-copy p { margin-top: 4px; }
+.account-login { margin-top: 12px; }
+.account-status { margin-top: 12px; color: var(--muted); font-size: .875rem; }
 </style>

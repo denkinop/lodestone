@@ -144,7 +144,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         {
             if (disposed || operation is not null || signingOut is { IsCompleted: false })
                 return Failed("已有操作正在处理");
-            current = operation = new LoginOperation(id, "正在读取已保存的角色档案");
+            current = operation = new LoginOperation(id, "正在读取已保存的角色信息");
         }
 
         try
@@ -156,7 +156,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                 return Failed("此大区没有已保存的登录状态，请手动登录");
             var directoryPath = cache.AccountPath(saved.Login.AccountId, areaId);
             if (CharacterCache.Read(directoryPath) is not { } catalog)
-                return Failed("本机没有角色档案，请手动登录并选择角色");
+                return Failed("本机没有已保存的角色信息，请手动登录并选择角色");
             var areaName = saved.AreaName;
             if (string.IsNullOrWhiteSpace(areaName))
                 areaName = (await directory.ReadCachedAsync(token))?.FirstOrDefault(entry => entry.Id == areaId)?.Name ?? $"大区 {areaId}";
@@ -174,7 +174,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             SessionChanged?.Invoke();
             return response;
         }
-        catch (OperationCanceledException) { return Failed("已取消打开角色档案"); }
+        catch (OperationCanceledException) { return Failed("已取消打开角色信息"); }
         finally { Finish(current); }
     }
 

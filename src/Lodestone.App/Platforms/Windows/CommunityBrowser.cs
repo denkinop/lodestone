@@ -113,7 +113,7 @@ internal sealed class CommunityBrowser
             allowedRoleChange = changeUri;
             var changeReply = await FetchOfficialAsync(core, changeUri, body);
             if (!CanContinue())
-                return "石之家会话已变化，请重新读取角色档案。";
+                return "石之家会话已变化，请重新读取角色信息。";
             if (changeReply is null || !current.ObserveRoleChange(changeReply, target))
                 return "未能确认石之家角色切换。";
 

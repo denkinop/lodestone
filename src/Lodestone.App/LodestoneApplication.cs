@@ -15,7 +15,7 @@ public sealed class LodestoneApplication : Application
 
         var window = new Window(new ContentPage { Content = view })
         {
-            Title = "Lodestone · 艾欧泽亚档案",
+            Title = "掌上艾欧泽亚",
             Width = 1280,
             Height = 900
         };
@@ -41,8 +41,9 @@ public sealed class LodestoneApplication : Application
                 {
                     request.Handled = true;
                     if (request.IsUserInitiated && Uri.TryCreate(request.Uri, UriKind.Absolute, out var uri)
-                        && uri.Scheme == Uri.UriSchemeHttps && uri.Host == "ff14.huijiwiki.com" && uri.IsDefaultPort
-                        && uri.AbsolutePath.StartsWith("/wiki/", StringComparison.Ordinal))
+                        && (OfficialHomeClient.IsOfficialWebUri(uri)
+                            || (uri.Scheme == Uri.UriSchemeHttps && uri.Host == "ff14.huijiwiki.com" && uri.IsDefaultPort
+                                && uri.AbsolutePath.StartsWith("/wiki/", StringComparison.Ordinal))))
                         await Launcher.Default.TryOpenAsync(uri);
                 };
         };

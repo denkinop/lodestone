@@ -1,6 +1,6 @@
-# Lodestone · 艾欧泽亚档案
+# 掌上艾欧泽亚
 
-Windows x64 角色档案客户端，使用 .NET MAUI、HybridWebView、Vue 和 WebGL2。支持盛趣角色档案、石之家只读信息、角色全身和面部预览、PNG 导出及游戏版本检查。
+Windows x64 客户端，使用 .NET MAUI、HybridWebView、Vue 和 WebGL2。支持查看盛趣角色信息和石之家只读信息、预览角色全身和面部、导出 PNG 及检查游戏版本。
 
 ## 构建
 
@@ -15,7 +15,7 @@ dotnet workload install maui-windows
 
 ## 核对 Windows 预览
 
-1. 完成盛趣登录并选择角色，打开角色档案。
+1. 完成盛趣登录并选择角色，打开角色信息。
 2. 点击已装备的物品，查看装备详情。
 3. 点击「3D 预览」，拖动角色并切换全身和面部，确认场景和贴图已加载。
 4. 点击「导出 PNG」，检查 WebView2 下载的 880 × 1200 PNG。
@@ -30,7 +30,7 @@ dotnet workload install maui-windows
 
 ## 盛趣登录与社区验证
 
-未登录时，客户端直接打开「盛趣登录」页。选择官方大区后，使用叨鱼确认或二维码授权。首次登录需要选择角色。有多个服务账号时，先选服务账号，再读取该账号的角色列表。客户端按盛趣账号和大区分别保存 Lobby 角色数据及当前角色。再次登录同一账号和大区会直接进入上次选择的角色档案。「设置 → 当前角色」可以切换角色或刷新角色信息。
+客户端启动后打开「首页」，可直接查看艾欧泽亚时间、石之家活动日历和国服官方信息。通过「设置 → 账号绑定 → 登录」选择官方大区，使用叨鱼确认或二维码授权。首次登录需要选择角色。有多个服务账号时，先选服务账号，再读取该账号的角色列表。客户端按盛趣账号和大区分别保存 Lobby 角色数据及当前角色。恢复已保存的登录后，首页会显示上次选择的角色。「设置」里的「当前角色」位于「账号绑定」下方，可以切换角色或刷新角色信息。
 
 角色资料中的生日和守护神来自 Lobby 的角色选择数据。旧缓存可通过「刷新角色信息」补齐这两项。 [ClientSelectData 字段](https://github.com/redstrate/Kawari/blob/master/servers/world/src/client_select_data.rs)
 
@@ -38,16 +38,23 @@ dotnet workload install maui-windows
 
 ## 预览游戏角色
 
-首次打开角色档案时，客户端从官方修复 CDN 按需读取 SqPack，用 C# 生成模型与贴图，并保存全身与面部静态肖像。后续打开档案会使用缓存。「3D 预览」可以查看并旋转角色，退出 3D 会恢复静态肖像。需要更新游戏外观、装备或 Lobby 角色资料时，在设置页选择「刷新角色信息」。刷新成功后会重新打开角色档案并生成预览。
+首次打开角色信息时，客户端从官方修复 CDN 按需读取 SqPack，用 C# 生成模型与贴图，并保存全身与面部静态肖像。后续打开角色信息会使用缓存。「3D 预览」可以查看并旋转角色，退出 3D 会恢复静态肖像。需要更新游戏外观、装备或 Lobby 角色资料时，在设置页选择「刷新角色信息」。刷新成功后会重新打开角色信息并生成预览。
 
 装备详情按外观模型和变体展示参考物品。名称、图标编号、品级、装备要求、属性、染色、服务器名称和守护神来自 XIVAPI 的简体中文 EXD 数据。客户端内置快照供离线查询。图标像素、模型和贴图由客户端按需从官方 CDN 获取。 [XIVAPI 表格文档](https://xivapi-v2.xivcdn.com/zh-cn/docs/guides/sheets/)
+
+## 天气查询
+
+在主导航打开「天气」，按地区和地图查看未来 48 个现实小时的天气。预报表按 ET 00:00、08:00 和 16:00 分列，每个时段的现实时间均按北京时间显示。可以组合筛选天气、前置天气和艾欧泽亚小时。
+
+地图、天气概率和天气图标来自简体中文 XIVAPI。客户端内置数据快照，打开页面时根据当前时间在本机计算预报。 [XIVAPI 表格文档](https://xivapi-v2.xivcdn.com/zh-cn/docs/guides/sheets/)
 
 ## 更新 EXD 数据
 
 使用 Python 3.10 或更新版本联网刷新快照，再运行 Windows 构建脚本。
 
 ```powershell
-python scripts/update-character-data.py
+python -B scripts/update-character-data.py
+python -B scripts/update-weather-data.py
 ```
 
 生成的 `data/character/zh-cn.json.gz` 记录 XIVAPI 发布版本、字段模式和各表数据的 SHA-256。导入会校验所有表来自同一个发布版本。

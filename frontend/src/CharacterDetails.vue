@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { icon, wikiUrl, type Character, type Equipment } from './character'
 import EquipmentRail from './EquipmentRail.vue'
 import JobLevels from './JobLevels.vue'
 import PreviewStage from './PreviewStage.vue'
 import UiIcon from './UiIcon.vue'
 
-const props = defineProps<{ character: Character }>()
+const props = defineProps<{ character: Character; active: boolean }>()
+const emit = defineEmits<{
+  portraitStart: [root: string]
+  portraitReady: [root: string, source: string]
+  portraitFinish: [root: string]
+}>()
 const selected = shallowRef<Equipment | null>(null)
 const pinned = ref(false)
 const position = ref<{ x: number; y: number }>()
@@ -78,6 +83,8 @@ function onKey(event: KeyboardEvent) {
   if (event.key === 'Escape') close()
 }
 
+watch(() => props.active, active => { if (!active) close() })
+
 onMounted(() => {
   window.addEventListener('keydown', onKey)
   window.addEventListener('resize', close)
@@ -109,7 +116,9 @@ onBeforeUnmount(() => {
   </div>
 
   <div class="character-showcase">
-    <PreviewStage :character="character" @resources="iconRoot = $event">
+    <PreviewStage :character="character" :active="active" @resources="iconRoot = $event"
+      @portrait-start="emit('portraitStart', $event)" @portrait-ready="(root, source) => emit('portraitReady', root, source)"
+      @portrait-finish="emit('portraitFinish', $event)">
       <template #main-hand>
         <EquipmentRail label="主手" :items="mainHand" :selected="selected" :icon-root="iconRoot" @reveal="reveal" @dismiss="scheduleClose" />
       </template>

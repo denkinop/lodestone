@@ -12,7 +12,9 @@
     <SingleProject>true</SingleProject>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <ApplicationTitle>Lodestone</ApplicationTitle>
+    <ApplicationTitle>掌上艾欧泽亚</ApplicationTitle>
+    <AssemblyTitle>$(ApplicationTitle)</AssemblyTitle>
+    <Product>$(ApplicationTitle)</Product>
     <ApplicationId>com.denkinop.lodestone</ApplicationId>
     <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
     <ApplicationVersion>1</ApplicationVersion>

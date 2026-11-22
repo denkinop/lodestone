@@ -9,6 +9,7 @@ internal sealed class ClientCommands : IDisposable
 {
     private const string LobbyVersionSetting = "lobby-version";
     private readonly OfficialCdnClient cdn = new();
+    private readonly OfficialHomeClient officialHome = new();
     private readonly GameVersionService versions;
     private readonly GameCommands game;
     private readonly GamePreview preview;
@@ -27,6 +28,9 @@ internal sealed class ClientCommands : IDisposable
         game.SessionChanged += OnGameSessionChanged;
     }
 
+    public Task<OfficialFeed<OfficialBanner>> GetOfficialBanners() => officialHome.GetBannersAsync();
+    public Task<OfficialFeed<OfficialNews>> GetOfficialNews() => officialHome.GetNewsAsync();
+    public Task<OfficialFeed<OfficialActivity>> GetOfficialCalendar(string month) => officialHome.GetCalendarAsync(month);
     public Task<AreaResponse> GetGameAreas() => game.GetAreasAsync();
     public Task<int?> GetSavedGameArea() => game.GetSavedAreaAsync();
     public Task<GameResponse> BeginGameLogin(string id, string mode, string account, int areaId, bool remember) =>
@@ -206,6 +210,7 @@ internal sealed class ClientCommands : IDisposable
         game.Dispose();
         Volatile.Write(ref community, null);
         MainThread.BeginInvokeOnMainThread(() => browser.SetSession(null, []));
+        officialHome.Dispose();
         cdn.Dispose();
     }
 

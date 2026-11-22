@@ -1,3 +1,32 @@
+export interface OfficialFeed<T> {
+  items: T[]
+  failed: boolean
+}
+
+export interface OfficialBanner {
+  id: number
+  title: string
+  image: string | null
+  url: string
+}
+
+export interface OfficialNews {
+  id: number
+  title: string
+  published: string | null
+  announcement: boolean
+  url: string
+}
+
+export interface OfficialActivity {
+  id: number
+  name: string
+  start: number
+  end: number
+  color: string | null
+  url: string | null
+}
+
 export interface VersionStatus {
   revision: string | null
   cached: boolean
@@ -92,6 +121,9 @@ function invokeClient<T>(method: string, args: unknown[] = []) {
   return window.HybridWebView.InvokeDotNet<T>(method, args)
 }
 
+export const getOfficialBanners = () => invokeClient<OfficialFeed<OfficialBanner>>('GetOfficialBanners')
+export const getOfficialNews = () => invokeClient<OfficialFeed<OfficialNews>>('GetOfficialNews')
+export const getOfficialCalendar = (month: string) => invokeClient<OfficialFeed<OfficialActivity>>('GetOfficialCalendar', [month])
 export const getLobbyVersion = () => invokeClient<number>('GetLobbyVersion')
 export const setLobbyVersion = (value: number) => invokeClient<boolean>('SetLobbyVersion', [value])
 export const refreshGameVersion = (id: string) => invokeClient<VersionStatus>('RefreshGameVersion', [id])

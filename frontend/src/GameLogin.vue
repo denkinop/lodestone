@@ -57,7 +57,7 @@ async function login(loginMode: 'phone' | 'scan' | 'saved' = mode.value) {
   const enteredAccount = loginMode === 'phone' ? account.value.trim() : ''
   active.value = id
   error.value = ''
-  progress.value = { status: loginMode === 'saved' ? '正在读取已保存的角色档案' : '正在连接盛趣', number: null, qr: null }
+  progress.value = { status: loginMode === 'saved' ? '正在读取已保存的角色信息' : '正在连接盛趣', number: null, qr: null }
   schedule(id)
   try {
     const result = await beginGameLogin(id, loginMode, enteredAccount, selectedArea, loginMode !== 'saved' && remember.value)
@@ -71,7 +71,7 @@ async function login(loginMode: 'phone' | 'scan' | 'saved' = mode.value) {
       return true
     }
   } catch {
-    if (active.value === id) error.value = loginMode === 'saved' ? '无法打开已保存的角色档案' : '无法完成盛趣登录，请重试'
+    if (active.value === id) error.value = loginMode === 'saved' ? '无法打开已保存的角色信息' : '无法完成盛趣登录，请重试'
   } finally {
     if (active.value === id) clearOperation()
   }
@@ -112,12 +112,9 @@ onMounted(async () => {
   const saved = await getSavedGameArea().catch(() => null)
   if (!mounted) return
   savedArea.value = saved
-  if (saved !== null) {
-    area.value = saved
-    if (!props.logoutError && await login('saved')) return
-  }
+  if (saved !== null) area.value = saved
   checkingSaved.value = false
-  if (mounted) await loadAreas(saved !== null || Boolean(props.logoutError))
+  await loadAreas(Boolean(props.logoutError))
 })
 onBeforeUnmount(() => {
   mounted = false
@@ -127,42 +124,40 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="narrow-page">
-    <div class="page-heading">
-      <div><h1>盛趣登录</h1></div>
-    </div>
-    <section class="paper settings-panel" aria-label="盛趣登录">
-      <form class="game-form" @submit.prevent="login()">
-        <label for="game-area">大区</label>
-        <select id="game-area" v-model="area" :disabled="Boolean(active) || checkingSaved || loadingAreas" required>
-          <option :value="undefined" disabled>{{ loadingAreas ? '正在读取大区…' : '请选择大区' }}</option>
-          <option v-for="option in areas" :key="option.id" :value="option.id">{{ option.name }}</option>
-        </select>
-        <button v-if="!areas.length && !checkingSaved && !loadingAreas" class="secondary" type="button" @click="loadAreas()">重新读取大区</button>
-        <div v-if="savedArea !== null" class="game-actions">
-          <button class="secondary" type="button" :disabled="Boolean(active)" @click="login('saved')">使用已保存登录</button>
-          <button class="secondary" type="button" :disabled="Boolean(active)" @click="forget">清除已保存登录</button>
-        </div>
-        <label for="login-mode">登录方式</label>
-        <select id="login-mode" v-model="mode" :disabled="Boolean(active)">
-          <option value="phone">叨鱼确认</option>
-          <option value="scan">二维码</option>
-        </select>
-        <label v-if="mode === 'phone'" for="sdo-account">盛趣账号</label>
-        <input v-if="mode === 'phone'" id="sdo-account" v-model="account" :disabled="Boolean(active)" autocomplete="off" maxlength="128" required>
-        <label class="game-remember"><input v-model="remember" type="checkbox" :disabled="Boolean(active)"> 在此设备保存登录状态</label>
+  <div aria-label="盛趣登录">
+    <form class="game-form" @submit.prevent="login()">
+      <label for="game-area">大区</label>
+      <select id="game-area" v-model="area" :disabled="Boolean(active) || checkingSaved || loadingAreas" required>
+        <option :value="undefined" disabled>{{ loadingAreas ? '正在读取大区…' : '请选择大区' }}</option>
+        <option v-for="option in areas" :key="option.id" :value="option.id">{{ option.name }}</option>
+      </select>
+      <button v-if="!areas.length && !checkingSaved && !loadingAreas" class="secondary" type="button" @click="loadAreas()">重新读取大区</button>
+      <div v-if="savedArea !== null" class="game-actions">
+        <button class="secondary" type="button" :disabled="Boolean(active)" @click="login('saved')">使用已保存登录</button>
+        <button class="secondary" type="button" :disabled="Boolean(active)" @click="forget">清除已保存登录</button>
+      </div>
+      <label for="login-mode">登录方式</label>
+      <select id="login-mode" v-model="mode" :disabled="Boolean(active)">
+        <option value="phone">叨鱼确认</option>
+        <option value="scan">二维码</option>
+      </select>
+      <label v-if="mode === 'phone'" for="sdo-account">盛趣账号</label>
+      <input v-if="mode === 'phone'" id="sdo-account" v-model="account" :disabled="Boolean(active)" autocomplete="off" maxlength="128" required>
+      <label class="game-remember"><input v-model="remember" type="checkbox" :disabled="Boolean(active)"> 在此设备保存登录状态</label>
+      <div class="game-actions">
         <button class="primary" type="submit" :disabled="Boolean(active) || checkingSaved || loadingAreas || area === undefined">
           {{ mode === 'phone' ? '发送确认' : '获取二维码' }}
         </button>
-      </form>
-    </section>
+        <slot name="actions" v-if="!active" />
+      </div>
+    </form>
     <div v-if="progress" class="paper settings-panel game-progress" role="status">
       <p>{{ progress.status }}<strong v-if="progress.number"> · 确认编号 {{ progress.number }}</strong></p>
       <img v-if="progress.qr" :src="progress.qr" width="120" height="120" alt="叨鱼登录二维码">
       <button class="secondary" type="button" :disabled="cancelling" @click="cancel">取消</button>
     </div>
-    <p v-if="error" role="alert">{{ error }}</p>
-  </main>
+    <p v-if="error" class="login-error" role="alert">{{ error }}</p>
+  </div>
 </template>
 
 <style scoped>
@@ -173,4 +168,5 @@ onBeforeUnmount(() => {
 .game-progress { margin-top: 16px; }
 .game-progress img { display: block; margin-block: 8px; image-rendering: pixelated; }
 .game-progress button { margin-top: 8px; }
+.login-error { margin-top: 12px; }
 </style>
