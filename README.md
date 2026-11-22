@@ -1,8 +1,8 @@
 # 掌上艾欧泽亚
 
-Windows x64 客户端，使用 .NET MAUI、HybridWebView、Vue 和 WebGL2。支持查看盛趣角色信息和石之家只读信息、预览角色全身和面部、导出 PNG 及检查游戏版本。
+Windows 和 Android 客户端，使用 .NET MAUI、HybridWebView、Vue 和 WebGL2。支持查看盛趣角色信息和石之家只读信息、预览角色全身和面部、导出 PNG 及检查游戏版本。
 
-## 构建
+## 构建 Windows 版
 
 需要 Windows 10 2004 或更新版本、WebView2 Evergreen、Node.js 24 和 .NET SDK 10.0.402。MAUI Windows 工作负载集固定在 `global.json`，宿主使用 MAUI 10.0.110。Windows SDK 构建工具随 NuGet 依赖还原。
 
@@ -12,6 +12,17 @@ dotnet workload install maui-windows
 ```
 
 脚本执行前端构建、NuGet 锁定恢复、Windows 编译和离线核心测试。运行 `src\Lodestone.App\bin\Release\net10.0-windows10.0.19041.0\win-x64\Lodestone.App.exe`。使用 `-Publish` 可生成自包含的应用目录，发布文件位于同一输出树下的 `publish`。
+
+## 构建 Android 版
+
+需要 Node.js 24、.NET SDK 10.0.402、JDK 17 或 21，以及 Android SDK 36。APK 可安装在 Android 10 或更新版本的 ARM64 或 x86_64 设备上，3D 预览使用支持 WebGL2 的系统 WebView。
+
+```powershell
+dotnet workload install maui-android
+.\scripts\build-android.ps1
+```
+
+可用 `-AndroidSdkDirectory` 和 `-JavaSdkDirectory` 指定 SDK 路径。APK 位于 `src\Lodestone.App\bin\Release\android-apk\com.denkinop.lodestone-Signed.apk`，使用本机 Android 调试密钥签名，可直接安装测试。导出的角色 PNG 保存在系统下载目录。
 
 ## 核对 Windows 预览
 

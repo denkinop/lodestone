@@ -6,7 +6,7 @@ using Lodestone.Core.Community;
 
 namespace Lodestone.App;
 
-internal sealed class ClientCommands : IDisposable
+internal sealed partial class ClientCommands : IDisposable
 {
     private const string LobbyVersionSetting = "lobby-version";
     private static readonly ExdDataStore Exd = new(Path.Combine(FileSystem.AppDataDirectory, "exd", "zh-cn.json.gz"));
@@ -260,6 +260,9 @@ internal sealed class ClientCommands : IDisposable
             active?.Cancellation.Cancel();
             lifetime.Cancel();
             lifetime.Dispose();
+#if ANDROID
+            portraitTransfers.Clear();
+#endif
         }
         game.SessionChanged -= OnGameSessionChanged;
         preview.Dispose();

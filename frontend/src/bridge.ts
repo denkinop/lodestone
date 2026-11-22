@@ -124,7 +124,7 @@ declare global {
 }
 
 function invokeClient<T>(method: string, args: unknown[] = []) {
-  if (!window.HybridWebView) return Promise.reject(new Error('请在 Windows 客户端中打开'))
+  if (!window.HybridWebView) return Promise.reject(new Error('请在掌上艾欧泽亚客户端中打开'))
   return window.HybridWebView.InvokeDotNet<T>(method, args)
 }
 
@@ -166,5 +166,27 @@ export async function prepareGamePreview(characterId: string, requestId: string)
 }
 
 export const releaseGamePreview = (id: string) => invokeClient<boolean>('ReleaseGamePreview', [id])
+export const androidClient = /\bAndroid\b/.test(navigator.userAgent)
+
 export const saveGamePortrait = (id: string, mode: 'full' | 'portrait', png: string) =>
-  invokeClient<boolean>('SaveGamePortrait', [id, mode, png])
+  androidClient ? transferPortrait(png, id, mode, '') : invokeClient<boolean>('SaveGamePortrait', [id, mode, png])
+
+export const exportAndroidPortrait = (name: string, png: string) => {
+  const fileName = name.replace(/[\\/\u0000-\u001f\u007f]/g, '_')
+  return transferPortrait(png, '', '', encodeURIComponent(fileName))
+}
+
+async function transferPortrait(png: string, requestId: string, mode: string, encodedFileName: string) {
+  const id = crypto.randomUUID()
+  // Android's HybridWebView carries bridge arguments in a request header.
+  const chunkSize = 64 * 1024
+  try {
+    for (let offset = 0; offset < png.length; offset += chunkSize) {
+      if (!await invokeClient<boolean>('AppendPortraitChunk', [id, offset, png.slice(offset, offset + chunkSize)]))
+        return false
+    }
+    return await invokeClient<boolean>('CompletePortraitTransfer', [id, requestId, mode, encodedFileName])
+  } finally {
+    await invokeClient<boolean>('CancelPortraitTransfer', [id]).catch(() => {})
+  }
+}

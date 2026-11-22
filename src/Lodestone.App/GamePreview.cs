@@ -115,9 +115,7 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
 
     internal bool SavePortrait(string requestId, string mode, string encoded)
     {
-        const string header = "data:image/png;base64,";
-        if (!Guid.TryParseExact(requestId, "D", out var id) || mode is not ("full" or "portrait")
-            || encoded.Length > 5_600_000 || !encoded.StartsWith(header, StringComparison.Ordinal))
+        if (!Guid.TryParseExact(requestId, "D", out var id) || mode is not ("full" or "portrait"))
             return false;
         lock (gate)
         {
@@ -125,13 +123,12 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
                 return false;
             try
             {
-                var png = Convert.FromBase64String(encoded[header.Length..]);
-                if (!PreviewCache.IsPng(png))
+                if (PreviewCache.DecodePng(encoded) is not { } png)
                     return false;
                 PreviewCache.SavePng(state.Character, mode + ".png", png);
                 return true;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException) { return false; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
         }
     }
 

@@ -9,6 +9,20 @@ internal static class PreviewCache
 {
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private const int MaxPngBytes = 4 << 20;
+    private const string PngDataPrefix = "data:image/png;base64,";
+    internal const int MaxPngDataLength = 5_600_000;
+
+    internal static byte[]? DecodePng(string data)
+    {
+        if (data.Length > MaxPngDataLength || !data.StartsWith(PngDataPrefix, StringComparison.Ordinal))
+            return null;
+        try
+        {
+            var png = Convert.FromBase64String(data[PngDataPrefix.Length..]);
+            return IsPng(png) ? png : null;
+        }
+        catch (FormatException) { return null; }
+    }
 
     internal static SceneAssets? ReadScene(PreviewCharacter character)
     {

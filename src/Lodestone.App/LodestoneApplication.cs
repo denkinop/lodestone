@@ -1,4 +1,6 @@
+#if WINDOWS
 using Microsoft.UI.Xaml.Controls;
+#endif
 
 namespace Lodestone.App;
 
@@ -11,18 +13,27 @@ public sealed class LodestoneApplication : Application
         view.SetInvokeJavaScriptTarget(commands);
         view.WebResourceRequested += commands.GetGamePreviewResource;
         view.WebResourceRequested += commands.GetLoginResource;
+#if WINDOWS
         view.HandlerChanged += OnHandlerChanged;
+#endif
 
-        var window = new Window(new ContentPage { Content = view })
+        var page = new ContentPage { Content = view };
+#if ANDROID
+        page.SafeAreaEdges = SafeAreaEdges.All;
+#endif
+        var window = new Window(page)
         {
             Title = "掌上艾欧泽亚",
+#if WINDOWS
             Width = 1280,
-            Height = 900
+            Height = 900,
+#endif
         };
         window.Destroying += (_, _) => commands.Dispose();
         return window;
     }
 
+#if WINDOWS
     private static void OnHandlerChanged(object? sender, EventArgs args)
     {
         if (sender is not HybridWebView { Handler.PlatformView: WebView2 platform })
@@ -41,14 +52,17 @@ public sealed class LodestoneApplication : Application
                 {
                     request.Handled = true;
                     if (request.IsUserInitiated && Uri.TryCreate(request.Uri, UriKind.Absolute, out var uri)
-                        && (OfficialHomeClient.IsOfficialWebUri(uri)
-                            || (uri.Scheme == Uri.UriSchemeHttps && uri.Host == "ff14.huijiwiki.com" && uri.IsDefaultPort
-                                && uri.AbsolutePath.StartsWith("/wiki/", StringComparison.Ordinal))))
+                        && IsExternalLink(uri))
                         await Launcher.Default.TryOpenAsync(uri);
                 };
         };
     }
+#endif
+
+    internal static bool IsExternalLink(Uri uri) => OfficialHomeClient.IsOfficialWebUri(uri)
+        || (uri.Scheme == Uri.UriSchemeHttps && uri.Host == "ff14.huijiwiki.com" && uri.IsDefaultPort
+            && string.IsNullOrEmpty(uri.UserInfo) && uri.AbsolutePath.StartsWith("/wiki/", StringComparison.Ordinal));
 
     internal static bool IsLocalWebViewUri(Uri uri) =>
-        uri.Scheme == Uri.UriSchemeHttps && uri.Host == "0.0.0.1" && uri.IsDefaultPort;
+        uri.Scheme == Uri.UriSchemeHttps && uri.Host == "0.0.0.1" && uri.IsDefaultPort && string.IsNullOrEmpty(uri.UserInfo);
 }

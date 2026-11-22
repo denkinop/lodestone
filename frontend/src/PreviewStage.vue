@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { prepareGamePreview, releaseGamePreview, saveGamePortrait, type GameGear } from './bridge'
+import { androidClient, exportAndroidPortrait, prepareGamePreview, releaseGamePreview, saveGamePortrait, type GameGear } from './bridge'
 import type { Character } from './character'
 import { jobIcon, jobName, lobbyJobIcon, lobbyJobName } from './jobs'
 import { portraitPng } from './portrait-export'
@@ -190,10 +190,17 @@ async function save() {
     const [figure, backdrop] = await Promise.all([figureSource, imageFrom(aetherBackground)])
     if (activeViewer !== viewer || mode !== view.value || lifetime.signal.aborted) return
     activeViewer?.render()
-    const link = document.createElement('a')
-    link.download = [props.character.name, props.character.world, mode === 'full' ? '全身' : '面部'].join('-') + '.png'
-    link.href = portraitPng(figure, backdrop, mode)
-    link.click()
+    const fileName = [props.character.name, props.character.world, mode === 'full' ? '全身' : '面部'].join('-') + '.png'
+    const png = portraitPng(figure, backdrop, mode)
+    if (androidClient) {
+      if (!await exportAndroidPortrait(fileName, png)) throw new Error('PNG 导出失败')
+      message.value = '已保存到下载目录'
+    } else {
+      const link = document.createElement('a')
+      link.download = fileName
+      link.href = png
+      link.click()
+    }
   } catch (error) {
     message.value = error instanceof Error ? error.message : 'PNG 导出失败'
   } finally {
