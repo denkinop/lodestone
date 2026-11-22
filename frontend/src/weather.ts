@@ -7,6 +7,11 @@ export interface WeatherRate {
   upper: number
 }
 
+export interface WeatherCatalog {
+  regions: { id: string; name: string; maps: { id: number; name: string; rates: WeatherRate[] }[] }[]
+  weather: Record<number, { name: string; icon: string }>
+}
+
 export interface WeatherPeriod {
   start: number
   hour: number

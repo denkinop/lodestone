@@ -1,4 +1,3 @@
-using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Lodestone.Core.Lobby;
@@ -32,7 +31,7 @@ public sealed record EquipmentStain([property: JsonPropertyName("id")] int Id,
 
 public sealed class CharacterData
 {
-    internal static CharacterData Instance { get; } = new();
+    internal static CharacterData Instance => ExdCatalog.Bundled.Character;
     private static readonly string[] Tribes = ["", "中原之民", "高地之民", "森林之民", "黑影之民", "平原之民", "沙漠之民",
         "逐日之民", "护月之民", "北洋之民", "红焰之民", "晨曦之民", "暮晖之民", "掠日之民", "迷失之民", "雷纳族", "维纳族"];
 
@@ -49,15 +48,11 @@ public sealed class CharacterData
     private readonly Dictionary<ushort, string> worlds = [];
     private readonly Dictionary<int, string> guardianDeities = [];
 
-    private CharacterData()
+    internal CharacterData(JsonElement data)
     {
-        using var resource = typeof(CharacterData).Assembly.GetManifestResourceStream("Lodestone.Data.Characters")
-            ?? throw new InvalidOperationException("缺少装备数据");
-        using var input = new GZipStream(resource, CompressionMode.Decompress);
-        using var document = JsonDocument.Parse(input);
-        foreach (var value in document.RootElement.GetProperty("items").EnumerateArray())
+        foreach (var value in data.GetProperty("items").EnumerateArray())
         {
-            var candidate = new EquipmentCandidate(value[0].GetInt32(), value[1].GetString()!, value[2].GetInt32())
+            var candidate = new EquipmentCandidate(value[0].GetInt32(), ReadName(value[1]), value[2].GetInt32())
             {
                 Details = ReadDetails(value[4]),
             };
@@ -70,15 +65,18 @@ public sealed class CharacterData
                     entry.Add(candidate);
             }
         }
-        foreach (var value in document.RootElement.GetProperty("stains").EnumerateArray())
+        foreach (var value in data.GetProperty("stains").EnumerateArray())
         {
             var id = value[0].GetInt32();
-            stains.Add(id, new EquipmentStain(id, value[1].GetString()!, value[2].GetString()));
+            stains.Add(id, new EquipmentStain(id, ReadName(value[1]), value[2].GetString()));
         }
-        foreach (var value in document.RootElement.GetProperty("worlds").EnumerateArray())
-            worlds[value[0].GetUInt16()] = value[1].GetString()!;
-        foreach (var value in document.RootElement.GetProperty("guardianDeities").EnumerateArray())
-            guardianDeities[value[0].GetInt32()] = value[1].GetString()!;
+        foreach (var value in data.GetProperty("worlds").EnumerateArray())
+            worlds[value[0].GetUInt16()] = ReadName(value[1]);
+        foreach (var value in data.GetProperty("guardianDeities").EnumerateArray())
+            guardianDeities[value[0].GetInt32()] = ReadName(value[1]);
+
+        if (candidates.Count == 0 || stains.Count == 0 || worlds.Count == 0 || guardianDeities.Count == 0)
+            throw new InvalidDataException("EXD 缺少角色或装备数据");
 
         foreach (var entries in candidates.Values)
             entries.Sort((left, right) =>
@@ -89,17 +87,24 @@ public sealed class CharacterData
             });
     }
 
-    private static EquipmentDetails ReadDetails(JsonElement data) => new(data[0].GetString()!, data[1].GetString()!,
+    private static string ReadName(JsonElement value) => value.GetString() is { Length: > 0 } name
+        ? name : throw new InvalidDataException("EXD 缺少角色或装备名称");
+
+    private static EquipmentDetails ReadDetails(JsonElement data) => new(data[0].GetString() ?? "", data[1].GetString() ?? "",
         data[2].GetInt32(), data[3].GetInt32(), data[4].GetInt32(), data[5].GetInt32(),
         data[6].GetInt32(), data[7].GetInt32(), data[8].GetInt32(), data[9].EnumerateArray()
-            .Select(value => new EquipmentAttribute(value[0].GetString()!, value[1].GetInt32())).ToArray());
+            .Select(value => new EquipmentAttribute(ReadName(value[0]), value[1].GetInt32())).ToArray());
 
     internal EquipmentStain? Stain(int id) => id == 0 ? null
         : stains.GetValueOrDefault(id) ?? new EquipmentStain(id, $"染色 {id}", null);
 
-    public static string? GetWorldName(ushort id) => Instance.worlds.GetValueOrDefault(id);
-    public static string? GetGuardianName(int? id) => id.HasValue ? Instance.guardianDeities.GetValueOrDefault(id.Value) : null;
+    public static string? GetWorldName(ushort id) => Instance.WorldName(id);
+    public static string? GetGuardianName(int? id) => Instance.GuardianName(id);
     public static string? GetTribeName(int? id) => id is > 0 && id < Tribes.Length ? Tribes[id.Value] : null;
+
+    public string? WorldName(ushort id) => worlds.GetValueOrDefault(id);
+    public string? GuardianName(int? id) => id.HasValue ? guardianDeities.GetValueOrDefault(id.Value) : null;
+    public string? StainColor(int id) => stains.GetValueOrDefault(id)?.Color;
 
     internal IReadOnlyList<EquipmentCandidate> Candidates(int slot, CharacterEquipment item)
     {

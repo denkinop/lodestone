@@ -7,7 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Lodestone.Core.Tests" />
-    <EmbeddedResource Include="../../data/character/zh-cn.json.gz" LogicalName="Lodestone.Data.Characters" />
+    <EmbeddedResource Include="../../data/exd/zh-cn.json.gz" LogicalName="Lodestone.Data.Exd" />
     <PackageReference Include="BCnEncoder.Net" Version="2.3.0" />
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
   </ItemGroup>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import AppNavigation from './AppNavigation.vue'
 import CharacterDetails from './CharacterDetails.vue'
 import GameVersionSettings from './GameVersionSettings.vue'
@@ -11,8 +11,9 @@ import WeatherPage from './WeatherPage.vue'
 import type { Character } from './character'
 import { communityJobProgress, lobbyJobName } from './jobs'
 import {
-  beginGameLogin, cancelGameOperation, chooseGameCharacter, getCommunityStatus, getSavedGameArea, refreshLobby, selectCommunityCharacter,
-  selectServiceAccount, signOutGame, type CommunityStatus, type GameCharacter, type GameResponse,
+  beginGameLogin, cancelGameOperation, chooseGameCharacter, getCommunityStatus, getCurrentGame, getExdProgress, getExdWeather,
+  getSavedGameArea, refreshExd, refreshLobby, selectCommunityCharacter, selectServiceAccount, signOutGame,
+  type CommunityStatus, type ExdWeatherView, type GameCharacter, type GameResponse,
 } from './bridge'
 
 type Screen = 'home' | 'choose' | 'profile' | 'weather' | 'settings'
@@ -27,9 +28,15 @@ const restoring = ref(true)
 const showLogin = ref(false)
 const preparingPortrait = ref<string>()
 const currentAvatar = ref<{ root: string; source: string }>()
+const exd = shallowRef<ExdWeatherView>()
+const exdLoading = ref(false)
+const exdUpdating = ref(false)
+const exdStatus = ref('')
+const exdGeneration = ref(0)
 let attemptedPortrait: string | undefined
 let restoreRequest: string | undefined
 let poll: ReturnType<typeof setTimeout> | undefined
+let exdPoll: ReturnType<typeof setTimeout> | undefined
 let generation = 0
 let communityRetry: { id: string; attempts: number; after: number } | undefined
 let syncingCommunity = false
@@ -53,7 +60,7 @@ const profile = computed(() => {
 const list = computed(() => game.value?.characters.map(toProfile) ?? [])
 const profileKey = computed(() => {
   const character = gameCharacter.value
-  return character ? `${character.id}:${character.revision}` : undefined
+  return character ? `${character.id}:${character.revision}:${exdGeneration.value}` : undefined
 })
 
 watch(() => gameCharacter.value?.portraitRoot, () => {
@@ -115,6 +122,69 @@ function finishPortrait(root: string) {
 function go(next: Screen) {
   screen.value = next
   window.scrollTo(0, 0)
+}
+
+async function loadExd() {
+  if (exd.value || exdLoading.value) return
+  exdLoading.value = true
+  try {
+    const data = await getExdWeather()
+    exd.value ??= data
+  } catch {
+    // The weather page offers a retry and the update button can still install a fresh snapshot.
+  } finally {
+    exdLoading.value = false
+  }
+}
+
+watch(screen, next => {
+  if (next === 'weather' || next === 'settings') void loadExd()
+})
+
+function pollExd() {
+  exdPoll = setTimeout(async () => {
+    try {
+      const progress = await getExdProgress()
+      if (exdUpdating.value && progress) exdStatus.value = progress
+    } catch {
+      // The update response reports the outcome.
+    }
+    if (exdUpdating.value) pollExd()
+  }, 750)
+}
+
+async function updateExd() {
+  if (exdUpdating.value) return
+  exdUpdating.value = true
+  exdStatus.value = '正在连接 XIVAPI…'
+  pollExd()
+  try {
+    const result = await refreshExd()
+    if (!result.data || result.error) {
+      exdStatus.value = result.error ?? '无法更新游戏数据，请稍后重试'
+      return
+    }
+    exd.value = result.data
+    let updateStatus = '已更新 · ' + result.data.version
+    const displayedGame = game.value
+    if (displayedGame) {
+      try {
+        const current = await getCurrentGame()
+        if (current && game.value === displayedGame) {
+          game.value = current
+          exdGeneration.value++
+        }
+      } catch {
+        updateStatus += ' · 重新读取当前角色后可查看最新资料'
+      }
+    }
+    exdStatus.value = updateStatus
+  } catch {
+    exdStatus.value = '无法更新游戏数据，请稍后重试'
+  } finally {
+    exdUpdating.value = false
+    clearTimeout(exdPoll)
+  }
 }
 
 function authorized(result: GameResponse) {
@@ -261,6 +331,8 @@ onMounted(() => { void restoreLogin() })
 onBeforeUnmount(() => {
   generation++
   clearTimeout(poll)
+  exdUpdating.value = false
+  clearTimeout(exdPoll)
   if (restoreRequest) void cancelGameOperation(restoreRequest).catch(() => {})
 })
 </script>
@@ -309,8 +381,15 @@ onBeforeUnmount(() => {
       </HomePage>
 
       <KeepAlive>
-        <WeatherPage v-if="screen === 'weather'" />
+        <WeatherPage v-if="screen === 'weather' && exd" :catalog="exd.catalog" />
       </KeepAlive>
+      <main v-if="screen === 'weather' && !exd" class="weather-page">
+        <PageHeading title="天气查询" />
+        <section class="paper settings-row">
+          <span role="status">{{ exdLoading ? '正在读取天气数据…' : '无法读取天气数据' }}</span>
+          <button v-if="!exdLoading" class="secondary" type="button" @click="loadExd">重试</button>
+        </section>
+      </main>
 
       <main v-if="screen === 'choose' && game" class="choose-page">
         <PageHeading title="选择角色">
@@ -413,7 +492,8 @@ onBeforeUnmount(() => {
             <p v-if="status" class="settings-row account-status" role="status">{{ status }}</p>
           </div>
         </section>
-        <GameVersionSettings v-if="screen === 'settings'" />
+        <GameVersionSettings v-if="screen === 'settings'" :exd-version="exd?.version"
+          :exd-status="exdStatus" :exd-updating="exdUpdating" @update-exd="updateExd" />
       </main>
     </div>
   </div>

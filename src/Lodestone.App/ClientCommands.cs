@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Lodestone.Core.Assets;
 using Lodestone.Core.Auth;
 using Lodestone.Core.Cdn;
 using Lodestone.Core.Community;
@@ -8,6 +9,7 @@ namespace Lodestone.App;
 internal sealed class ClientCommands : IDisposable
 {
     private const string LobbyVersionSetting = "lobby-version";
+    private static readonly ExdDataStore Exd = new(Path.Combine(FileSystem.AppDataDirectory, "exd", "zh-cn.json.gz"));
     private readonly OfficialCdnClient cdn = new();
     private readonly OfficialHomeClient officialHome = new();
     private readonly GameVersionService versions;
@@ -18,12 +20,14 @@ internal sealed class ClientCommands : IDisposable
     private CommunityAccess? communityOwner;
     private readonly object gate = new();
     private VersionOperation? active;
+    private readonly CancellationTokenSource lifetime = new();
+    private string? exdProgress;
     private bool disposed;
 
     internal ClientCommands()
     {
         versions = new GameVersionService(cdn, Path.Combine(FileSystem.AppDataDirectory, "cdn"));
-        game = new GameCommands(versions, GetLobbyVersion);
+        game = new GameCommands(versions, GetLobbyVersion, Exd);
         preview = new GamePreview(cdn, game.FindPreviewCharacter);
         game.SessionChanged += OnGameSessionChanged;
     }
@@ -32,6 +36,56 @@ internal sealed class ClientCommands : IDisposable
     public Task<OfficialFeed<OfficialNews>> GetOfficialNews() => officialHome.GetNewsAsync();
     public Task<OfficialFeed<OfficialActivity>> GetOfficialCalendar(string month) => officialHome.GetCalendarAsync(month);
     public Task<AreaResponse> GetGameAreas() => game.GetAreasAsync();
+    public GameResponse? GetCurrentGame() => game.GetCurrent();
+    public Task<ExdWeatherView> GetExdWeather() => Task.Run(() => WeatherView(Exd.Current));
+    public string? GetExdProgress() => Volatile.Read(ref exdProgress);
+
+    public async Task<ExdUpdateResult> RefreshExd()
+    {
+        CancellationToken token;
+        lock (gate)
+        {
+            if (disposed)
+                return new(Error: "窗口已关闭");
+            if (exdProgress is not null)
+                return new(Error: "EXD 数据正在更新");
+            token = lifetime.Token;
+            Volatile.Write(ref exdProgress, "正在连接 XIVAPI…");
+        }
+
+        try
+        {
+            var catalog = await Task.Run(() => Exd.RefreshAsync(status => Volatile.Write(ref exdProgress, status), token), token);
+            return new(Data: WeatherView(catalog));
+        }
+        catch (HttpRequestException ex)
+        {
+            return new(Error: ex.StatusCode is { } code ? $"XIVAPI 返回 HTTP {(int)code}，请稍后重试"
+                : "无法连接 XIVAPI，请检查网络后重试");
+        }
+        catch (OperationCanceledException)
+        {
+            return new(Error: token.IsCancellationRequested ? "EXD 更新已取消" : "XIVAPI 响应超时，请稍后重试");
+        }
+        catch (InvalidDataException ex) { return new(Error: ex.Message); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new(Error: "无法读取或保存 EXD 快照，请稍后重试");
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or KeyNotFoundException
+            or ArgumentException or FormatException or OverflowException or IndexOutOfRangeException)
+        {
+            return new(Error: "XIVAPI 返回的 EXD 数据格式无效");
+        }
+        finally
+        {
+            lock (gate)
+                Volatile.Write(ref exdProgress, null);
+        }
+    }
+
+    private static ExdWeatherView WeatherView(ExdCatalog catalog) => new(catalog.Version, catalog.Weather);
+
     public Task<int?> GetSavedGameArea() => game.GetSavedAreaAsync();
     public Task<GameResponse> BeginGameLogin(string id, string mode, string account, int areaId, bool remember) =>
         game.LoginAsync(id, mode, account, areaId, remember);
@@ -204,6 +258,8 @@ internal sealed class ClientCommands : IDisposable
         {
             disposed = true;
             active?.Cancellation.Cancel();
+            lifetime.Cancel();
+            lifetime.Dispose();
         }
         game.SessionChanged -= OnGameSessionChanged;
         preview.Dispose();
@@ -221,6 +277,14 @@ internal sealed class ClientCommands : IDisposable
         internal VersionProgress? Progress { get; set; }
     }
 }
+
+internal sealed record ExdWeatherView(
+    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("catalog")] WeatherCatalog Catalog);
+
+internal sealed record ExdUpdateResult(
+    [property: JsonPropertyName("data")] ExdWeatherView? Data = null,
+    [property: JsonPropertyName("error")] string? Error = null);
 
 internal sealed record VersionStatus(
     [property: JsonPropertyName("revision")] string? Revision = null,

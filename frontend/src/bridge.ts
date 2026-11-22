@@ -1,3 +1,5 @@
+import type { WeatherCatalog } from './weather'
+
 export interface OfficialFeed<T> {
   items: T[]
   failed: boolean
@@ -36,6 +38,11 @@ export interface VersionStatus {
 export interface VersionProgress {
   bytesRead: number
   totalBytes: number
+}
+
+export interface ExdWeatherView {
+  version: string
+  catalog: WeatherCatalog
 }
 
 export interface GameArea {
@@ -129,6 +136,10 @@ export const setLobbyVersion = (value: number) => invokeClient<boolean>('SetLobb
 export const refreshGameVersion = (id: string) => invokeClient<VersionStatus>('RefreshGameVersion', [id])
 export const getGameVersionProgress = (id: string) => invokeClient<VersionProgress | null>('GetGameVersionProgress', [id])
 export const cancelGameVersion = (id: string) => invokeClient<boolean>('CancelGameVersion', [id])
+export const getExdWeather = () => invokeClient<ExdWeatherView>('GetExdWeather')
+export const getExdProgress = () => invokeClient<string | null>('GetExdProgress')
+export const refreshExd = () => invokeClient<{ data: ExdWeatherView | null; error: string | null }>('RefreshExd')
+export const getCurrentGame = () => invokeClient<GameResponse | null>('GetCurrentGame')
 export const getGameAreas = () => invokeClient<{ areas: GameArea[]; error: string | null }>('GetGameAreas')
 export const getSavedGameArea = () => invokeClient<number | null>('GetSavedGameArea')
 export const beginGameLogin = (id: string, mode: 'phone' | 'scan' | 'saved', account: string, areaId: number, remember: boolean) =>

@@ -3,15 +3,15 @@ import { computed, onActivated, onDeactivated, ref, watch } from 'vue'
 import PageHeading from './PageHeading.vue'
 import UiIcon from './UiIcon.vue'
 import { chinaDay, eorzeaTime, twoDigits } from './home-time'
-import catalog from './weather-data.json'
-import { forecastPeriods, matchingWeather, weatherPeriodMs, type WeatherPeriod } from './weather'
+import { forecastPeriods, matchingWeather, weatherPeriodMs, type WeatherCatalog, type WeatherPeriod } from './weather'
 
-const regions = [...catalog.regions].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
-const weather: Record<number, { name: string; icon: string }> = catalog.weather
-const initialRegion = regions.find(region => region.maps.some(map => map.id === 146)) ?? regions[0]
-const regionId = ref(initialRegion.id)
-const mapId = ref(initialRegion.maps.find(map => map.id === 146)?.id ?? initialRegion.maps[0].id)
-const region = computed(() => regions.find(item => item.id === regionId.value) ?? initialRegion)
+const props = defineProps<{ catalog: WeatherCatalog }>()
+const regions = computed(() => [...props.catalog.regions].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')))
+const weather = computed(() => props.catalog.weather)
+const initialRegion = computed(() => regions.value.find(region => region.maps.some(map => map.id === 146)) ?? regions.value[0])
+const regionId = ref(initialRegion.value.id)
+const mapId = ref(initialRegion.value.maps.find(map => map.id === 146)?.id ?? initialRegion.value.maps[0].id)
+const region = computed(() => regions.value.find(item => item.id === regionId.value) ?? initialRegion.value)
 const maps = computed(() => [...region.value.maps].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')))
 const map = computed(() => maps.value.find(item => item.id === mapId.value) ?? maps.value[0])
 const weatherOptions = computed(() => [...new Set(map.value.rates.map(rate => rate.weather))])
@@ -74,6 +74,14 @@ const rowLimit = ref(initialRows)
 const canShowMore = computed(() => rowLimit.value < (filtered.value ? matches.value.length : days.value.length - historyRows))
 
 watch([mapId, desired, previous, hours], () => { rowLimit.value = initialRows }, { deep: true })
+watch(() => props.catalog, () => {
+  regionId.value = region.value.id
+  mapId.value = map.value.id
+  const available = new Set(weatherOptions.value)
+  for (const values of [desired.value, previous.value]) {
+    for (const id of values) if (!available.has(id)) values.delete(id)
+  }
+})
 
 const timeFormat = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai', hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -81,7 +89,7 @@ const timeFormat = new Intl.DateTimeFormat('zh-CN', {
 const dateLabel = (time: number) => chinaDay(time).slice(5).replace('-', '/')
 const timeLabel = (time: number) => timeFormat.format(time)
 const dateTime = (time: number) => new Date(time).toISOString()
-const iconPath = (id: number) => `${import.meta.env.BASE_URL}images/weather/${weather[id].icon}`
+const iconPath = (id: number) => `data:image/webp;base64,${weather.value[id].icon}`
 </script>
 
 <template>

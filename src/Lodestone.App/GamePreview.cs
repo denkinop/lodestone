@@ -47,14 +47,14 @@ internal sealed class GamePreview(OfficialCdnClient cdn, Func<string, PreviewCha
                     if (scene is null)
                     {
                         var source = await GetSourceAsync(token);
-                        scene = await source.BuildAsync(character.Character, snapshot!.Revision, token);
+                        scene = await source.BuildAsync(character.Character, snapshot!.Revision, character.Data, token);
                         token.ThrowIfCancellationRequested();
                         try { PreviewCache.SaveScene(character, scene); }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                     }
                     var loaded = scene.Scene.Gear.Where(entry => entry.Loaded).Select(entry => entry.Slot)
                         .ToHashSet(StringComparer.Ordinal);
-                    var gear = CharacterScene.DescribeGear(character.Character.Equipment, loaded);
+                    var gear = CharacterScene.DescribeGear(character.Character.Equipment, loaded, character.Data);
                     return new Prepared(id, character, JsonSerializer.SerializeToUtf8Bytes(scene.Scene with { Gear = gear }, PreviewCache.Json),
                         scene.Textures, gear.SelectMany(entry => entry.Candidates).Select(candidate => candidate.Icon)
                             .Where(icon => icon > 0).ToHashSet());

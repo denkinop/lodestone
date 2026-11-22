@@ -5,6 +5,9 @@ import {
   type VersionProgress,
 } from './bridge'
 
+defineProps<{ exdVersion?: string; exdStatus: string; exdUpdating: boolean }>()
+defineEmits<{ updateExd: [] }>()
+
 const lobby = ref<number | string>('')
 const lobbyStatus = ref('')
 const saving = ref(false)
@@ -117,6 +120,10 @@ onBeforeUnmount(() => {
           <progress :aria-label="'正在读取游戏 EXE ' + percentage + '%'" :value="percentage" max="100" />
           <span class="version-status">正在读取游戏 EXE · {{ percentage }}%</span>
         </template>
+      </div>
+      <div class="settings-row version-row">
+        <button class="secondary" type="button" :disabled="exdUpdating" @click="$emit('updateExd')">更新游戏数据</button>
+        <span class="version-status" role="status">{{ exdStatus || (exdVersion ? '当前版本 ' + exdVersion : '') }}</span>
       </div>
     </div>
   </section>

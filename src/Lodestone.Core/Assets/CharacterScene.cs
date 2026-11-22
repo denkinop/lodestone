@@ -30,7 +30,10 @@ public sealed class CharacterScene(SqPackArchive pack)
     private const long MaxSceneBytes = 64L << 20;
     private static readonly int[] Races = [0, 101, 501, 1101, 701, 901, 1301, 1501, 1701];
 
-    public async Task<SceneAssets> BuildAsync(LobbyCharacter character, string revision, CancellationToken token)
+    public Task<SceneAssets> BuildAsync(LobbyCharacter character, string revision, CancellationToken token) =>
+        BuildAsync(character, revision, CharacterData.Instance, token);
+
+    public async Task<SceneAssets> BuildAsync(LobbyCharacter character, string revision, CharacterData data, CancellationToken token)
     {
         if (character.Appearance is not { Customize.Count: >= 26 } appearance || appearance.Race is < 1 or > 8
             || appearance.Gender is < 0 or > 1)
@@ -118,7 +121,7 @@ public sealed class CharacterScene(SqPackArchive pack)
                 var paths = CharacterMaterial.Paths(part.Path, mesh.Material, part.Material).ToArray();
                 var key = $"{paths.FirstOrDefault() ?? part.Path + '/' + mesh.Material}:{part.Stain1}:{part.Stain2}:{part.Slot == "face"}";
                 if (!materials.TryGetValue(key, out var material))
-                    materials[key] = material = await ResolveMaterial(paths, part, mesh.Material, LoadTexture, warnings, token);
+                    materials[key] = material = await ResolveMaterial(paths, part, mesh.Material, LoadTexture, warnings, data, token);
                 if (material.Shader == "characterocclusion.shpk")
                     continue;
                 var vertices = deformer.Apply(mesh, part.Source, part.Target, token);
@@ -150,7 +153,7 @@ public sealed class CharacterScene(SqPackArchive pack)
         if (!loaded.Contains("face"))
             throw new SqPackException("该角色没有可显示的面部网格");
 
-        var gear = DescribeGear(character.Equipment, loaded);
+        var gear = DescribeGear(character.Equipment, loaded, data);
         return new SceneAssets(new SceneData(meshes, materials, colors, gear, rig is not null, rig?.IdleRace,
             [head.M11, head.M12, head.M13, -Vector3.Dot(new Vector3(head.M11, head.M12, head.M13), head.Translation)],
             eyes, [head.M31, head.M32, head.M33], new Dictionary<string, int>
@@ -189,16 +192,19 @@ public sealed class CharacterScene(SqPackArchive pack)
         }
     }
 
-    public static SceneGear[] DescribeGear(IReadOnlyList<CharacterEquipment> equipment, IReadOnlySet<string>? loaded = null)
+    public static SceneGear[] DescribeGear(IReadOnlyList<CharacterEquipment> equipment, IReadOnlySet<string>? loaded = null) =>
+        DescribeGear(equipment, loaded, CharacterData.Instance);
+
+    public static SceneGear[] DescribeGear(IReadOnlyList<CharacterEquipment> equipment, IReadOnlySet<string>? loaded, CharacterData data)
     {
         var equipped = equipment.ToDictionary(item => item.Slot, StringComparer.Ordinal);
         return CharacterData.Slots.Select((slot, index) =>
         {
             var item = equipped.GetValueOrDefault(slot.Key);
-            var candidates = item is { Model: > 0 } ? CharacterData.Instance.Candidates(index, item) : [];
+            var candidates = item is { Model: > 0 } ? data.Candidates(index, item) : [];
             return new SceneGear(slot.Key, slot.Name, item?.Model ?? 0, item?.Variant ?? 0, loaded?.Contains(slot.Key) ?? false,
                 candidates.Select(candidate => candidate.Name).Distinct().ToArray(), candidates,
-                [CharacterData.Instance.Stain(item?.Stain1 ?? 0), CharacterData.Instance.Stain(item?.Stain2 ?? 0)]);
+                [data.Stain(item?.Stain1 ?? 0), data.Stain(item?.Stain2 ?? 0)]);
         }).ToArray();
     }
 
@@ -320,10 +326,10 @@ public sealed class CharacterScene(SqPackArchive pack)
         && (mask & (1 << (attr[^1] - 'a'))) == 0;
 
     private async Task<SceneMaterial> ResolveMaterial(string[] paths, Part part, string name, Func<string, string, Task<string?>> load,
-        SortedSet<string> warnings, CancellationToken token)
+        SortedSet<string> warnings, CharacterData catalog, CancellationToken token)
     {
         var face = part.Slot == "face";
-        string?[] dyes = [CharacterData.Instance.Stain(part.Stain1)?.Color, CharacterData.Instance.Stain(part.Stain2)?.Color];
+        string?[] dyes = [catalog.StainColor(part.Stain1), catalog.StainColor(part.Stain2)];
         foreach (var path in paths)
         {
             if (await pack.ReadAsync(path, token) is not { } data)

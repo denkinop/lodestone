@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import catalog from '../src/weather-data.json' with { type: 'json' }
+import { gunzipSync } from 'node:zlib'
 import { forecastDurationMs, forecastPeriods, forecastTarget, matchingWeather, weatherPeriodMs } from '../src/weather.ts'
 
+const { weather: catalog } = JSON.parse(gunzipSync(readFileSync(new URL('../../data/exd/zh-cn.json.gz', import.meta.url))))
 const southernThanalan = catalog.regions.flatMap(region => region.maps).find(map => map.id === 146)
 
 test('the unsigned forecast roll changes only at ET weather boundaries', () => {

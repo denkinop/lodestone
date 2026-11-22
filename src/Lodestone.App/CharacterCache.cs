@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Lodestone.Core.Assets;
 using Lodestone.Core.Lobby;
 
 namespace Lodestone.App;
@@ -22,7 +23,7 @@ internal sealed record CachedCatalog(ServiceAccount[] Accounts, Dictionary<int, 
     }
 }
 
-internal sealed record PreviewCharacter(LobbyCharacter Character, Guid Session, Guid Revision, string Directory)
+internal sealed record PreviewCharacter(LobbyCharacter Character, Guid Session, Guid Revision, string Directory, CharacterData Data)
 {
     internal string PortraitRoot => $"/_game_preview/portrait/{Session:D}/{Character.ContentId}/{Revision:D}/";
 }

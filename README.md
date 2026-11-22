@@ -48,13 +48,14 @@ dotnet workload install maui-windows
 
 地图、天气概率和天气图标来自简体中文 XIVAPI。客户端内置数据快照，打开页面时根据当前时间在本机计算预报。 [XIVAPI 表格文档](https://xivapi-v2.xivcdn.com/zh-cn/docs/guides/sheets/)
 
-## 更新 EXD 数据
+## 更新游戏数据
 
-使用 Python 3.10 或更新版本联网刷新快照，再运行 Windows 构建脚本。
+在「设置 → 高级设置」点击「更新游戏数据」。客户端从 XIVAPI 下载简体中文角色、装备、地图和天气表，以及天气图标。校验所有表的版本一致后，客户端会把新快照保存到本机并立即使用。下载失败时继续使用当前快照，首次使用也可以离线查询内置数据。 [XIVAPI 表格文档](https://xivapi-v2.xivcdn.com/zh-cn/docs/guides/sheets/)
+
+要刷新随程序发布的内置快照，在仓库根目录运行以下命令，再运行 Windows 构建脚本。
 
 ```powershell
-python -B scripts/update-character-data.py
-python -B scripts/update-weather-data.py
+dotnet run --file scripts/update-exd-data.cs
 ```
 
-生成的 `data/character/zh-cn.json.gz` 记录 XIVAPI 发布版本、字段模式和各表数据的 SHA-256。导入会校验所有表来自同一个发布版本。
+脚本和客户端共用同一个导入器。内置快照保存在 `data/exd/zh-cn.json.gz`。

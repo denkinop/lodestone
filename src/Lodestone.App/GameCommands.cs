@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Serialization;
 using Lodestone.Core.Assets;
 using Lodestone.Core.Auth;
@@ -8,7 +10,7 @@ using Lodestone.Core.Lobby;
 
 namespace Lodestone.App;
 
-internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyVersion)
+internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyVersion, ExdDataStore exd)
 {
     private const string InstallationKey = "sdo-installation";
     private static readonly string[] RaceNames = ["", "人族", "精灵族", "拉拉菲尔族", "猫魅族", "鲁加族", "敖龙族", "硌狮族", "维埃拉族"];
@@ -291,27 +293,51 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         {
             if (session is not { } active || active.Catalog.Choice?.Id != contentId)
                 return null;
-            var character = Preview(active, contentId)?.Character;
-            var world = character is null ? null : KnownWorld(character.HomeWorld);
-            return character is not null && world is not null
-                ? (active.Community, new CommunityCharacter(character.Name, active.AreaName, world)) : null;
+            var entry = Preview(active, contentId, exd.Current.Character);
+            var world = entry is null ? null : KnownWorld(entry.Character.HomeWorld, entry.Data);
+            return entry is not null && world is not null
+                ? (active.Community, new CommunityCharacter(entry.Character.Name, active.AreaName, world)) : null;
         }
     }
 
     internal PreviewCharacter? FindPreviewCharacter(string contentId)
     {
         lock (gate)
-            return session is { } active ? Preview(active, contentId) : null;
+            return session is { } active ? Preview(active, contentId, exd.Current.Character) : null;
     }
 
-    private static PreviewCharacter? Preview(GameSession active, string id)
+    internal GameResponse? GetCurrent()
+    {
+        lock (gate)
+            return session is { } active ? Present(active) : null;
+    }
+
+    private static PreviewCharacter? Preview(GameSession active, string id, CharacterData data)
     {
         if (!ulong.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out _))
             return null;
         foreach (var entry in active.Catalog.Rosters)
             if (entry.Value.Characters.FirstOrDefault(character => character.ContentId == id) is { } character)
-                return new(character, active.Id, entry.Value.Revision, Path.Combine(active.Directory, id));
+                return new(character, active.Id, PreviewRevision(character.Equipment, entry.Value.Revision, data),
+                    Path.Combine(active.Directory, id), data);
         return null;
+    }
+
+    private static Guid PreviewRevision(IReadOnlyList<CharacterEquipment> equipment, Guid revision, CharacterData data)
+    {
+        var bundled = ExdCatalog.Bundled.Character;
+        if (ReferenceEquals(data, bundled))
+            return revision;
+
+        // Scene and portrait caches depend on dye colors. Metadata-only updates can reuse them.
+        var ids = equipment.SelectMany(item => new[] { item.Stain1, item.Stain2 }).Where(id => id > 0).Distinct().Order();
+        var changed = new StringBuilder();
+        foreach (var id in ids)
+            if (data.StainColor(id) != bundled.StainColor(id))
+                changed.Append(FormattableString.Invariant($"/{id}:{data.StainColor(id)}"));
+
+        return changed.Length == 0 ? revision
+            : new Guid(SHA256.HashData(Encoding.UTF8.GetBytes(revision.ToString("D") + changed)).AsSpan(0, 16));
     }
 
     internal GameProgress? GetProgress(string requestId)
@@ -394,14 +420,15 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
 
     private static GameResponse Failed(string reason) => new([], null, [], reason);
 
-    private static GameResponse Present(GameSession session)
+    private GameResponse Present(GameSession session)
     {
         var catalog = session.Catalog;
-        var current = catalog.Choice is { } choice ? Preview(session, choice.Id) : null;
+        var data = exd.Current.Character;
+        var current = catalog.Choice is { } choice ? Preview(session, choice.Id, data) : null;
         var index = session.ViewIndex;
         var roster = index is { } selected ? catalog.Rosters.GetValueOrDefault(selected) : null;
         return new(catalog.Accounts.Select(account => new GameAccount(account.Index, account.Name)).ToArray(), index,
-            roster?.Characters.Select(character => Present(Preview(session, character.ContentId)!, session.AreaName)).ToArray() ?? [],
+            roster?.Characters.Select(character => Present(Preview(session, character.ContentId, data)!, session.AreaName)).ToArray() ?? [],
             Current: current is null ? null : Present(current, session.AreaName), Cached: roster is not null,
             CurrentIndex: catalog.Choice?.Index);
     }
@@ -409,12 +436,12 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
     private static GameCharacter Present(PreviewCharacter entry, string areaName)
     {
         var character = entry.Character;
-        return new(character.ContentId, character.Name, areaName, World(character.HomeWorld), World(character.CurrentWorld),
+        return new(character.ContentId, character.Name, areaName, World(character.HomeWorld, entry.Data), World(character.CurrentWorld, entry.Data),
             Race(character.Appearance?.Race), character.Appearance?.Gender switch { 0 => "男", 1 => "女", _ => null },
             character.ClassJobId, character.Level, character.DetailError,
-            CharacterScene.DescribeGear(character.Equipment), CharacterData.GetTribeName(character.Appearance?.Tribe),
+            CharacterScene.DescribeGear(character.Equipment, null, entry.Data), CharacterData.GetTribeName(character.Appearance?.Tribe),
             entry.PortraitRoot, entry.Revision.ToString("D"), FormatBirthday(character.Birthday),
-            CharacterData.GetGuardianName(character.GuardianDeityId));
+            entry.Data.GuardianName(character.GuardianDeityId));
     }
 
     private static string? FormatBirthday(CharacterBirthday? birthday) => birthday is { Month: >= 1 and <= 12, Day: >= 1 and <= 32 }
@@ -422,8 +449,9 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
 
     private static string? Race(int? value) => value is >= 1 and <= 8 ? RaceNames[value.Value] : null;
 
-    private static string? KnownWorld(CharacterWorld world) => world.Name.Length > 0 ? world.Name : CharacterData.GetWorldName(world.Id);
-    private static string World(CharacterWorld world) => KnownWorld(world) ?? (world.Id == 0 ? "未获取" : world.Id.ToString(CultureInfo.InvariantCulture));
+    private static string? KnownWorld(CharacterWorld world, CharacterData data) => world.Name.Length > 0 ? world.Name : data.WorldName(world.Id);
+    private static string World(CharacterWorld world, CharacterData data) => KnownWorld(world, data)
+        ?? (world.Id == 0 ? "未获取" : world.Id.ToString(CultureInfo.InvariantCulture));
 
     internal void Dispose()
     {
