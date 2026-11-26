@@ -15,6 +15,7 @@ public sealed partial class GameVersionService(OfficialCdnClient cdn, string cac
     private const int MaximumExpansion = 5;
     private const int LobbyFieldLimit = 144;
     private const int ChunkSize = 1 << 20;
+    private const int ConcurrentChunks = 4;
     private const int MaximumVersionFileSize = 1024;
     private const int MaximumCacheSize = 4096;
     private readonly SemaphoreSlim refreshLock = new(1);
@@ -34,26 +35,35 @@ public sealed partial class GameVersionService(OfficialCdnClient cdn, string cac
             if (cached is not null)
                 return new GameVersion(snapshot.Revision, cached.VersionInfo, FromCache: true);
 
-            var suffix = new List<string>(versions.Count);
-            foreach (var (path, size) in versions)
+            var suffix = await Task.WhenAll(versions.Select(async file =>
             {
-                var bytes = await cdn.ReadRangeAsync(snapshot, path, 0, size, cancellationToken);
+                var bytes = await cdn.ReadRangeAsync(snapshot, file.Path, 0, file.Size, cancellationToken);
                 var value = CdnManifest.Utf8.GetString(bytes).TrimStart('\uFEFF').Trim();
                 if (!ExpansionVersion().IsMatch(value))
-                    throw new OfficialCdnException($"官方资料片版本文件格式无效（{path}）");
-                suffix.Add(value[..value.LastIndexOf('.')]);
-            }
+                    throw new OfficialCdnException($"官方资料片版本文件格式无效（{file.Path}）");
+                return value[..value.LastIndexOf('.')];
+            }));
 
             using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
             long bytesRead = 0;
             progress?.Invoke(new VersionDownloadProgress(bytesRead, executable.Size));
             while (bytesRead < executable.Size)
             {
-                var size = (int)Math.Min(ChunkSize, executable.Size - bytesRead);
-                var block = await cdn.ReadRangeAsync(snapshot, ExecutablePath, bytesRead, size, cancellationToken);
-                sha.AppendData(block);
-                bytesRead += block.Length;
-                progress?.Invoke(new VersionDownloadProgress(bytesRead, executable.Size));
+                var downloads = new List<Task<byte[]>>(ConcurrentChunks);
+                for (var offset = bytesRead; downloads.Count < ConcurrentChunks && offset < executable.Size;)
+                {
+                    var size = (int)Math.Min(ChunkSize, executable.Size - offset);
+                    downloads.Add(cdn.ReadRangeAsync(snapshot, ExecutablePath, offset, size, cancellationToken));
+                    offset += size;
+                }
+                // WhenAll returns blocks in file order even when the HTTP responses arrive out of order.
+                foreach (var block in await Task.WhenAll(downloads))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    sha.AppendData(block);
+                    bytesRead += block.Length;
+                    progress?.Invoke(new VersionDownloadProgress(bytesRead, executable.Size));
+                }
             }
 
             var digest = Convert.ToHexStringLower(sha.GetHashAndReset());

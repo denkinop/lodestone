@@ -22,6 +22,7 @@ public sealed class OfficialCdnClient : IDisposable
         AllowAutoRedirect = false,
         AutomaticDecompression = DecompressionMethods.None,
         ConnectTimeout = TimeSpan.FromSeconds(8),
+        MaxConnectionsPerServer = 6,
         UseCookies = false,
     }, TimeProvider.System) { }
 
@@ -37,8 +38,10 @@ public sealed class OfficialCdnClient : IDisposable
         {
             using var manifestRequest = new HttpRequestMessage(HttpMethod.Get, ManifestUri);
             using var controlRequest = new HttpRequestMessage(HttpMethod.Get, ControlUri);
-            var manifest = CdnManifest.Parse(await DownloadAsync(manifestRequest, MetadataLimit, cancellationToken));
-            var signing = CdnSigning.Parse(await DownloadAsync(controlRequest, MetadataLimit, cancellationToken));
+            var responses = await Task.WhenAll(DownloadAsync(manifestRequest, MetadataLimit, cancellationToken),
+                DownloadAsync(controlRequest, MetadataLimit, cancellationToken));
+            var manifest = CdnManifest.Parse(responses[0]);
+            var signing = CdnSigning.Parse(responses[1]);
             return new CdnSnapshot(manifest, signing);
         }
         catch (Exception ex) when (ex is FormatException or ArgumentException or XmlException)

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.Compression;
 using System.Net;
@@ -12,6 +13,7 @@ internal sealed class XivApiExdImporter(HttpClient http)
     private const string Api = "https://xivapi-v2.xivcdn.com/api";
     private const string Language = "chs";
     private const int PageSize = 500;
+    private const int ConcurrentDownloads = 4;
     private const ulong WeaponMask = (1UL << 48) - 1;
     private static readonly string[] Slots = ["MainHand", "OffHand", "Head", "Body", "Gloves", "Legs", "Feet",
         "Ears", "Neck", "Wrists", "FingerL", "FingerR"];
@@ -40,16 +42,34 @@ internal sealed class XivApiExdImporter(HttpClient http)
 
     internal async Task<byte[]> DownloadAsync(Action<string>? progress, CancellationToken token)
     {
-        var tables = new Dictionary<string, Dictionary<int, JsonElement>>(StringComparer.Ordinal);
-        Release? release = null;
-        for (var index = 0; index < Sheets.Length; index++)
-        {
-            var (name, fields) = Sheets[index];
-            void Report(int count) => progress?.Invoke(
-                $"正在下载 {name}（{index + 1}/{Sheets.Length}）{(count > 0 ? $" · 已读取 {count:N0} 行" : "")}");
-            Report(0);
-            (tables[name], release) = await ReadSheetAsync(name, fields, release, Report, token).ConfigureAwait(false);
-        }
+        var (firstSheet, firstFields) = Sheets[0];
+        progress?.Invoke($"正在下载 {firstSheet}（0/{Sheets.Length} 张表已完成）");
+        var (firstRows, release) = await ReadSheetAsync(firstSheet, firstFields, null, count =>
+            progress?.Invoke($"正在下载 {firstSheet} · 已读取 {count:N0} 行（0/{Sheets.Length} 张表已完成）"), token).ConfigureAwait(false);
+        var rows = new Dictionary<int, JsonElement>[Sheets.Length];
+        rows[0] = firstRows;
+        var completed = 1;
+        var progressGate = new object();
+        // Start the largest sheet early. Each sheet still follows its own pagination cursor in order.
+        var remaining = Enumerable.Range(1, Sheets.Length - 1).OrderBy(index => Sheets[index].Name != "Item");
+        await Parallel.ForEachAsync(remaining, new ParallelOptions { MaxDegreeOfParallelism = ConcurrentDownloads, CancellationToken = token },
+            async (index, cancellationToken) =>
+            {
+                var (name, fields) = Sheets[index];
+                void Report(int count)
+                {
+                    lock (progressGate)
+                        progress?.Invoke($"正在下载 {name} · 已读取 {count:N0} 行（{completed}/{Sheets.Length} 张表已完成）");
+                }
+                (rows[index], _) = await ReadSheetAsync(name, fields, release, Report, cancellationToken).ConfigureAwait(false);
+                lock (progressGate)
+                {
+                    completed++;
+                    progress?.Invoke($"{completed}/{Sheets.Length} 张表已下载 · {name}");
+                }
+            }).ConfigureAwait(false);
+        var tables = Sheets.Select((sheet, index) => (sheet.Name, Rows: rows[index]))
+            .ToDictionary(sheet => sheet.Name, sheet => sheet.Rows, StringComparer.Ordinal);
 
         var weather = await ReadWeatherAsync(tables["TerritoryType"], tables["WeatherRate"], tables["Weather"],
             progress, token).ConfigureAwait(false);
@@ -64,7 +84,7 @@ internal sealed class XivApiExdImporter(HttpClient http)
         var snapshot = new
         {
             format = ExdCatalog.Format,
-            source = new { api = Api, language = Language, version = release!.Version, schema = release.Schema },
+            source = new { api = Api, language = Language, version = release.Version, schema = release.Schema },
             sources = tables.ToDictionary(pair => pair.Key, pair =>
                 Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(pair.Value)))),
             wardrobeSlotCoverage = true,
@@ -265,25 +285,34 @@ internal sealed class XivApiExdImporter(HttpClient http)
             region.Maps.Add(new(id, name, distribution.ToArray()));
         }
 
-        var icons = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-        var kinds = new Dictionary<int, WeatherKind>();
-        foreach (var id in usedWeather)
+        var entries = usedWeather.Select(id =>
         {
-            var row = weather[id];
-            var icon = row.GetProperty("Icon");
-            var path = icon.GetProperty("path_hr1").GetString() ?? "";
-            progress?.Invoke($"正在下载天气图标（{kinds.Count + 1}/{usedWeather.Count}）");
-            if (!icons.TryGetValue(path, out var bytes))
+            var icon = weather[id].GetProperty("Icon");
+            return (Id: id, Path: icon.GetProperty("path_hr1").GetString() ?? "", Icon: icon);
+        }).ToArray();
+        var groups = entries.GroupBy(entry => entry.Path, StringComparer.Ordinal).ToArray();
+        var icons = new ConcurrentDictionary<string, byte[]>(StringComparer.Ordinal);
+        var completed = 0;
+        var progressGate = new object();
+        progress?.Invoke($"正在下载天气图标（0/{groups.Length}）");
+        await Parallel.ForEachAsync(groups, new ParallelOptions { MaxDegreeOfParallelism = ConcurrentDownloads, CancellationToken = token },
+            async (group, cancellationToken) =>
             {
-                try { bytes = await ReadIconAsync(path, token).ConfigureAwait(false); }
+                byte[] bytes;
+                try { bytes = await ReadIconAsync(group.Key, cancellationToken).ConfigureAwait(false); }
                 catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
                 {
-                    bytes = await ReadIconAsync(icon.GetProperty("path").GetString() ?? "", token).ConfigureAwait(false);
+                    var fallback = group.First().Icon.GetProperty("path").GetString() ?? "";
+                    bytes = await ReadIconAsync(fallback, cancellationToken).ConfigureAwait(false);
                 }
-                icons.Add(path, bytes);
-            }
-            kinds.Add(id, new(Name(row), bytes));
-        }
+                icons[group.Key] = bytes;
+                lock (progressGate)
+                {
+                    completed++;
+                    progress?.Invoke($"正在下载天气图标（{completed}/{groups.Length}）");
+                }
+            }).ConfigureAwait(false);
+        var kinds = entries.ToDictionary(entry => entry.Id, entry => new WeatherKind(Name(weather[entry.Id]), icons[entry.Path]));
         return new(regions.Select(pair => new WeatherRegion(pair.Key, pair.Value.Name, pair.Value.Maps.ToArray())).ToArray(), kinds);
     }
 

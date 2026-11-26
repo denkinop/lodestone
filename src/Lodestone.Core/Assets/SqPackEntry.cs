@@ -9,6 +9,7 @@ internal static class SqPackEntry
     private const int EntryHeaderSize = 24;
     private const int MaximumFileSize = 128 << 20;
     private const int MaximumDecodedBlock = 1 << 16;
+    private const int BlockBatchBytes = 1 << 20;
 
     internal static async Task<byte[]?> ReadAsync(
         Func<long, int, CancellationToken, Task<byte[]>> read, long offset, CancellationToken token)
@@ -54,7 +55,7 @@ internal static class SqPackEntry
             var block = await ReadBlockAsync(read, start + U32(header, entry), token);
             if (output.Length + block.Length > size)
                 throw new SqPackException("SqPack 解包长度超出声明值");
-            Add(output, block);
+            Add(output, block.Span);
         }
         if (output.Length != size)
             throw new SqPackException("SqPack 解包长度与声明值不匹配");
@@ -119,22 +120,47 @@ internal static class SqPackEntry
     {
         if ((ulong)first + count > (ulong)(header.Length - table) / 2)
             throw new SqPackException("SqPack 数据块长度表截断");
-        for (var index = 0u; index < count; index++)
+        for (var index = 0u; index < count;)
         {
-            var stride = U16(header, table + (int)(first + index) * 2);
-            if (stride < 16)
-                throw new SqPackException("SqPack 块间距无效");
-            Add(output, await ReadBlockAsync(read, position, token, stride));
-            position += stride;
+            var begin = index;
+            var length = 0;
+            // Model and texture tables provide stored block lengths, so adjacent blocks can share one range request.
+            for (; index < count; index++)
+            {
+                var stride = U16(header, table + (int)(first + index) * 2);
+                if (stride < 16)
+                    throw new SqPackException("SqPack 块间距无效");
+                if (length + stride > BlockBatchBytes)
+                    break;
+                length += stride;
+            }
+            var bytes = await read(position, length, token);
+            var offset = 0;
+            for (var blockIndex = begin; blockIndex < index; blockIndex++)
+            {
+                token.ThrowIfCancellationRequested();
+                var stride = U16(header, table + (int)(first + blockIndex) * 2);
+                var block = ParseBlock(bytes.AsSpan(offset, 16), stride);
+                Add(output, (await DecodeBlockAsync(bytes, offset + block.HeaderSize, block, token)).Span);
+                offset += stride;
+            }
+            position += length;
         }
     }
 
-    private static async Task<byte[]> ReadBlockAsync(
-        Func<long, int, CancellationToken, Task<byte[]>> read, long offset,
-        CancellationToken token, int? stride = null)
+    private static async Task<ReadOnlyMemory<byte>> ReadBlockAsync(
+        Func<long, int, CancellationToken, Task<byte[]>> read, long offset, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        var header = await read(offset, 16, token);
+        var block = ParseBlock(await read(offset, 16, token));
+        if (block.StoredSize == 0)
+            return ReadOnlyMemory<byte>.Empty;
+        var bytes = await read(offset + block.HeaderSize, block.StoredSize, token);
+        return await DecodeBlockAsync(bytes, 0, block, token);
+    }
+
+    private static Block ParseBlock(ReadOnlySpan<byte> header, int? stride = null)
+    {
         var headerSize = U32(header, 0);
         var stored = U32(header, 8);
         var size = U32(header, 12);
@@ -145,16 +171,18 @@ internal static class SqPackEntry
         var storedSize = (int)(compressed ? stored : size);
         if (stride is { } blockSize && headerSize + storedSize > blockSize)
             throw new SqPackException("SqPack 数据块超出其索引范围");
-        if (storedSize == 0)
-            return [];
-        var bytes = await read(offset + headerSize, storedSize, token);
-        if (!compressed)
-            return bytes;
+        return new((int)headerSize, storedSize, (int)size, compressed);
+    }
+
+    private static async Task<ReadOnlyMemory<byte>> DecodeBlockAsync(byte[] bytes, int offset, Block block, CancellationToken token)
+    {
+        if (!block.Compressed)
+            return bytes.AsMemory(offset, block.StoredSize);
         try
         {
-            using var input = new MemoryStream(bytes, writable: false);
+            using var input = new MemoryStream(bytes, offset, block.StoredSize, writable: false);
             using var deflate = new DeflateStream(input, CompressionMode.Decompress);
-            var decoded = new byte[size];
+            var decoded = new byte[block.DecodedSize];
             await deflate.ReadExactlyAsync(decoded, token);
             if (deflate.ReadByte() != -1)
                 throw new SqPackException("SqPack 解压长度超出声明值");
@@ -166,7 +194,7 @@ internal static class SqPackEntry
         }
     }
 
-    private static void Add(MemoryStream output, byte[] bytes)
+    private static void Add(MemoryStream output, ReadOnlySpan<byte> bytes)
     {
         if (output.Length + bytes.Length > MaximumFileSize)
             throw new SqPackException("SqPack 解包数据超过上限");
@@ -175,4 +203,6 @@ internal static class SqPackEntry
 
     private static void U32To(byte[] header, int offset, uint value) =>
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(offset), value);
+
+    private readonly record struct Block(int HeaderSize, int StoredSize, int DecodedSize, bool Compressed);
 }

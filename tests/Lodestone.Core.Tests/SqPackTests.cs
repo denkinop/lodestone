@@ -1,6 +1,9 @@
 using System.Buffers.Binary;
+using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using Lodestone.Core.Assets;
+using Lodestone.Core.Cdn;
 using Xunit;
 
 namespace Lodestone.Core.Tests;
@@ -54,6 +57,44 @@ public sealed class SqPackTests
     }
 
     [Fact]
+    public async Task ConcurrentReadsShareTheIndexAndDataPage()
+    {
+        const string resource = "chara/test/entry.mdl";
+        const string indexPath = "game/sqpack/ffxiv/040000.win32.index";
+        const string dataPath = "game/sqpack/ffxiv/040000.win32.dat0";
+        var index = new byte[56];
+        "SqPack\0"u8.CopyTo(index);
+        Set32(index, 12, 24);
+        Set32(index, 32, 40);
+        Set32(index, 36, 16);
+        BinaryPrimitives.WriteUInt64LittleEndian(index.AsSpan(40), SqPackFormat.ResourceKey(resource));
+        Set32(index, 48, 16); // Entry at byte offset 128 in dat0.
+        byte[] data = [.. new byte[128], .. EntryHeader(32, 2, 4, 1), .. Block("tail"u8.ToArray())];
+
+        var hash = new string('0', 32);
+        var manifest = CdnManifest.Parse(Encoding.UTF8.GetBytes(
+            $"https://ff14.jijiagames.com/v3client/build/100001900/8847/apppc/1179|100001900|0.0.0.31\n"
+            + $"{indexPath}|{index.Length}|{hash}\n{dataPath}|{data.Length}|{hash}"));
+        var signing = new CdnSigning(new string('a', 32), "test", "test");
+        var dataName = signing.FileUri(manifest, manifest.Files[dataPath], DateTimeOffset.UnixEpoch).Segments[^1];
+        using var handler = new TestArchive(index, data, dataName);
+        using var cdn = new OfficialCdnClient(handler, TimeProvider.System);
+        var archive = new SqPackArchive(cdn, new CdnSnapshot(manifest, signing));
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var first = archive.ReadAsync(resource, timeout.Token);
+        await handler.PageStarted.Task.WaitAsync(timeout.Token);
+        var second = archive.ReadAsync(resource, timeout.Token);
+        handler.ReleasePage.TrySetResult();
+        var entries = await Task.WhenAll(first, second);
+        Assert.All(entries, entry => Assert.Equal("tail"u8.ToArray(), entry));
+        entries[0]![0] = 0;
+        Assert.Equal("tail"u8.ToArray(), await archive.ReadAsync(resource, timeout.Token));
+        Assert.Equal(3, handler.IndexReads);
+        Assert.Equal(1, handler.PageReads);
+    }
+
+    [Fact]
     public async Task ModelEntryBuildsLodZeroOffsetsAndLengths()
     {
         var header = EntryHeader(216, 3, 1000, 0x00010005);
@@ -87,14 +128,19 @@ public sealed class SqPackTests
     public async Task TextureEntryKeepsHeaderAndTopMip()
     {
         var top = Block("top"u8.ToArray());
+        var detail = Block("detail"u8.ToArray());
         var next = Block("lower"u8.ToArray());
-        var header = EntryHeader(68, 4, 11, 2);
+        var header = EntryHeader(70, 4, 17, 2);
         Set32(header, 24, 3);
-        Set32(header, 40, 1);
+        Set32(header, 40, 2);
         Set16(header, 64, (ushort)top.Length);
-        Set16(header, 66, (ushort)next.Length);
-        var decoded = Assert.IsType<byte[]>(await Read([..header, .."tex"u8, ..top, ..next]));
-        Assert.Equal("textop"u8.ToArray(), decoded);
+        Set16(header, 66, (ushort)detail.Length);
+        Set16(header, 68, (ushort)next.Length);
+        var reads = new List<(long Offset, int Size)>();
+        var decoded = Assert.IsType<byte[]>(await Read([..header, .."tex"u8, ..top, ..detail, ..next],
+            (offset, size) => reads.Add((offset, size))));
+        Assert.Equal("textopdetail"u8.ToArray(), decoded);
+        Assert.Equal([(0L, 24), (0L, 70), (70L, 3), (73L, top.Length + detail.Length)], reads);
     }
 
     [Fact]
@@ -107,9 +153,10 @@ public sealed class SqPackTests
         await Assert.ThrowsAsync<SqPackException>(() => Read([..header, ..excessive]));
     }
 
-    private static Task<byte[]?> Read(byte[] entry) => SqPackEntry.ReadAsync((offset, size, token) =>
+    private static Task<byte[]?> Read(byte[] entry, Action<long, int>? record = null) => SqPackEntry.ReadAsync((offset, size, token) =>
     {
         token.ThrowIfCancellationRequested();
+        record?.Invoke(offset, size);
         if (offset < 0 || offset > entry.LongLength - size)
             throw new SqPackException("Test entry was truncated");
         return Task.FromResult(entry.AsSpan((int)offset, size).ToArray());
@@ -140,4 +187,32 @@ public sealed class SqPackTests
 
     private static void Set16(byte[] bytes, int offset, ushort value) =>
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(offset), value);
+
+    private sealed class TestArchive(byte[] index, byte[] data, string dataName) : HttpMessageHandler
+    {
+        internal readonly TaskCompletionSource PageStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource ReleasePage = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int IndexReads;
+        internal int PageReads;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            var isData = request.RequestUri!.Segments[^1] == dataName;
+            if (isData)
+            {
+                Interlocked.Increment(ref PageReads);
+                PageStarted.TrySetResult();
+                await ReleasePage.Task.WaitAsync(token);
+            }
+            else
+                Interlocked.Increment(ref IndexReads);
+            var bytes = isData ? data : index;
+            var range = Assert.Single(request.Headers.Range!.Ranges);
+            var start = (int)range.From!.Value;
+            var end = (int)range.To!.Value;
+            var content = new ByteArrayContent(bytes.AsSpan(start, end - start + 1).ToArray());
+            content.Headers.ContentRange = new ContentRangeHeaderValue(start, end, bytes.Length);
+            return new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = content };
+        }
+    }
 }

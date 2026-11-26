@@ -53,35 +53,29 @@ public sealed class CharacterScene(SqPackArchive pack)
             throw new SqPackException("角色缺少可识别的外观数据");
         var custom = appearance.Customize;
         var race = Races[appearance.Race] + 100 * appearance.Gender + (appearance.Race == 1 && appearance.Tribe == 2 ? 200 : 0);
-        var face = custom[5];
         var warnings = new SortedSet<string>(StringComparer.Ordinal);
-        var facePath = HumanPath(race, "face", face, "fac");
-        byte[]? faceData = null;
-        if (appearance.Race != 1 && appearance.Tribe % 2 == 0 && face < 100)
-        {
-            var preferred = HumanPath(race, "face", face + 100, "fac");
-            faceData = await pack.ReadAsync(preferred, token);
-            if (faceData is not null)
-            {
-                face += 100;
-                facePath = preferred;
-            }
-        }
-        faceData ??= await pack.ReadAsync(facePath, token);
-        if (faceData is null)
-            throw new SqPackException("当前游戏资源缺少该角色的面部模型");
-        var parts = new List<Part> { new("face", facePath, faceData), new("hair", HumanPath(race, "hair", custom[6], "hir")) };
+        var faceTask = ReadFaceAsync();
+        var baseParts = new List<Task<Part>> { ReadPartAsync("hair", HumanPath(race, "hair", custom[6], "hir")) };
         if (appearance.Race is 4 or 6 or 7)
-            parts.Add(new("tail", HumanPath(race, "tail", Math.Max(1, custom[22]), "til")));
+            baseParts.Add(ReadPartAsync("tail", HumanPath(race, "tail", Math.Max(1, custom[22]), "til")));
         if (appearance.Race == 8)
-            parts.Add(new("ears_base", HumanPath(race, "zear", Math.Max(1, custom[22]), "zer")));
+            baseParts.Add(ReadPartAsync("ears_base", HumanPath(race, "zear", Math.Max(1, custom[22]), "zer")));
+        var basePartsTask = Task.WhenAll(baseParts);
+        var deformerTask = pack.ReadAsync("chara/xls/bonedeformer/human.pbd", token);
+        var rigTask = CharacterRig.ReadAsync(pack, race, custom[21], token);
+        var colorsTask = pack.ReadAsync("chara/xls/charamake/human.cmp", token);
+        await Task.WhenAll(faceTask, basePartsTask, deformerTask, rigTask, colorsTask);
+        var (face, facePart) = await faceTask;
+        var parts = new List<Part> { facePart };
+        parts.AddRange(await basePartsTask);
         if (appearance.Glasses.Any(id => id != 0))
             warnings.Add("当前预览未加载面饰");
         if (appearance.FacePaint != 0)
             warnings.Add("当前预览未加载面彩");
 
-        var deformer = new CharacterDeformation(await pack.ReadAsync("chara/xls/bonedeformer/human.pbd", token));
+        var deformer = new CharacterDeformation(await deformerTask);
         var equipped = character.Equipment.ToDictionary(item => item.Slot, StringComparer.Ordinal);
+        var equipment = new List<Task<(Part? Part, string? Warning)>>();
         for (var index = 0; index < CharacterData.Slots.Length; index++)
         {
             var slot = CharacterData.Slots[index];
@@ -90,21 +84,25 @@ public sealed class CharacterScene(SqPackArchive pack)
             var item = equipped.GetValueOrDefault(slot.Key) ?? new CharacterEquipment(slot.Key, 0, 0, 0, 0, 0);
             if (item.Model == 0 && index is not (>= 3 and <= 6))
                 continue;
-            var part = await ResolveEquipment(item, index, race, deformer, token);
-            if (part is not null)
-                parts.Add(part);
-            else if (outfit?.TriedSlots.Contains(slot.Key) == true)
-                throw new SqPackException($"{slot.Name}缺少适用于当前角色的模型");
-            else if (item.Model != 0)
-                warnings.Add($"{slot.Name}模型缺失");
+            equipment.Add(ResolveSlotAsync(item, index));
         }
 
-        var rig = await CharacterRig.ReadAsync(pack, race, custom[21], token);
+        var rig = await rigTask;
         if (rig?.IdleRace is null)
             warnings.Add(rig is null ? "骨骼资源不可用，已使用模型原始姿势" : "默认待机动作不可用，已使用备用站姿");
         var head = rig?.Head ?? Matrix4x4.Identity;
-        var eyes = await CharacterRig.ReadEyesAsync(pack, race, face, head, token);
-        var colors = ReadColors(await pack.ReadAsync("chara/xls/charamake/human.cmp", token), appearance);
+        var eyesTask = CharacterRig.ReadEyesAsync(pack, race, face, head, token);
+        var equipmentTask = Task.WhenAll(equipment);
+        await Task.WhenAll(equipmentTask, eyesTask);
+        foreach (var (part, warning) in await equipmentTask)
+        {
+            if (part is not null)
+                parts.Add(part);
+            if (warning is not null)
+                warnings.Add(warning);
+        }
+        var eyes = await eyesTask;
+        var colors = ReadColors(await colorsTask, appearance);
         if (colors.Count == 0)
             warnings.Add("角色调色表缺失");
         var flags = await ReadHeadFlags(parts.Any(part => part.Slot == "head") ? equipped.GetValueOrDefault("head") : null, token);
@@ -117,7 +115,7 @@ public sealed class CharacterScene(SqPackArchive pack)
         long textureBytes = 0;
         foreach (var part in parts)
         {
-            var bytes = part.Model ?? await pack.ReadAsync(part.Path, token);
+            var bytes = part.Model;
             if (bytes is null)
             {
                 ReportModelFailure(part, "模型缺失");
@@ -138,7 +136,7 @@ public sealed class CharacterScene(SqPackArchive pack)
                 var paths = CharacterMaterial.Paths(part.Path, mesh.Material, part.Material).ToArray();
                 var key = $"{paths.FirstOrDefault() ?? part.Path + '/' + mesh.Material}:{part.Stain1}:{part.Stain2}:{part.Slot == "face"}";
                 if (!materials.TryGetValue(key, out var material))
-                    materials[key] = material = await ResolveMaterial(paths, part, mesh.Material, LoadTexture, warnings, data, token);
+                    materials[key] = material = await ResolveMaterial(paths, part, mesh.Material, LoadTexturesAsync, warnings, data, token);
                 if (material.Shader == "characterocclusion.shpk")
                     continue;
                 var vertices = deformer.Apply(mesh, part.Source, part.Target, token);
@@ -187,32 +185,85 @@ public sealed class CharacterScene(SqPackArchive pack)
             warnings.Add($"{message} · {FileName(part.Path)}");
         }
 
-        async Task<string?> LoadTexture(string path, string role)
+        async Task<(int Face, Part Part)> ReadFaceAsync()
         {
-            var cacheKey = (path, role == "index");
-            if (maps.TryGetValue(cacheKey, out var previous))
-                return previous;
-            string? id = null;
+            var index = custom[5];
+            if (appearance.Race != 1 && appearance.Tribe % 2 == 0 && index < 100)
+            {
+                var preferred = await ReadPartAsync("face", HumanPath(race, "face", index + 100, "fac"));
+                if (preferred.Model is not null)
+                    return (index + 100, preferred);
+            }
+            var part = await ReadPartAsync("face", HumanPath(race, "face", index, "fac"));
+            return part.Model is not null ? (index, part) : throw new SqPackException("当前游戏资源缺少该角色的面部模型");
+        }
+
+        async Task<Part> ReadPartAsync(string slot, string path) => new(slot, path, await pack.ReadAsync(path, token));
+
+        async Task<(Part? Part, string? Warning)> ResolveSlotAsync(CharacterEquipment item, int index)
+        {
+            var slot = CharacterData.Slots[index];
+            var part = await ResolveEquipment(item, index, race, deformer, token);
+            if (part is not null)
+                return (part, null);
+            if (outfit?.TriedSlots.Contains(slot.Key) == true)
+                throw new SqPackException($"{slot.Name}缺少适用于当前角色的模型");
+            return (null, item.Model != 0 ? $"{slot.Name}模型缺失" : null);
+        }
+
+        async Task<Dictionary<string, string>> LoadTexturesAsync(Dictionary<string, string> source)
+        {
+            var missing = source.Select(pair => (Path: pair.Value, Nearest: pair.Key == "index"))
+                .Where(key => !maps.ContainsKey(key)).Distinct();
+            foreach (var batch in missing.Chunk(3))
+            {
+                var downloaded = await Task.WhenAll(batch.Select(key => DownloadTextureAsync(key.Path)));
+                for (var index = 0; index < batch.Length; index++)
+                {
+                    var key = batch[index];
+                    var (texture, warning) = downloaded[index];
+                    string? id = null;
+                    if (warning is not null)
+                        warnings.Add(warning);
+                    if (texture is not null)
+                    {
+                        // Decode one at a time to keep the memory used by large textures bounded.
+                        try
+                        {
+                            var png = CharacterTexture.ToPng(texture, key.Nearest, token);
+                            if (textureBytes + png.Length > MaxSceneBytes)
+                                throw new SqPackException("贴图超出预览容量");
+                            id = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{key.Nearest}:{key.Path}")))[..32];
+                            textures.Add(id, png);
+                            textureBytes += png.Length;
+                        }
+                        catch (Exception ex) when (ex is SqPackException or OverflowException or ArgumentException or InvalidDataException)
+                        {
+                            warnings.Add($"贴图无法读取 · {FileName(key.Path)}（{ex.Message}）");
+                        }
+                    }
+                    maps[key] = id;
+                }
+            }
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (role, path) in source)
+                if (maps[(path, role == "index")] is { } id)
+                    result.Add(role, id);
+            return result;
+        }
+
+        async Task<(byte[]? Data, string? Warning)> DownloadTextureAsync(string path)
+        {
             try
             {
                 if (await pack.ReadAsync(path, token) is { } tex)
-                {
-                    var png = CharacterTexture.ToPng(tex, cacheKey.Item2, token);
-                    if (textureBytes + png.Length > MaxSceneBytes)
-                        throw new SqPackException("贴图超出预览容量");
-                    id = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{cacheKey.Item2}:{path}")))[..32];
-                    textures.Add(id, png);
-                    textureBytes += png.Length;
-                }
-                else
-                    warnings.Add($"贴图缺失 · {FileName(path)}");
+                    return (tex, null);
+                return (null, $"贴图缺失 · {FileName(path)}");
             }
             catch (Exception ex) when (ex is SqPackException or OverflowException or ArgumentException or InvalidDataException)
             {
-                warnings.Add($"贴图无法读取 · {FileName(path)}（{ex.Message}）");
+                return (null, $"贴图无法读取 · {FileName(path)}（{ex.Message}）");
             }
-            maps[cacheKey] = id;
-            return id;
         }
     }
 
@@ -256,8 +307,12 @@ public sealed class CharacterScene(SqPackArchive pack)
             if (item.ModelType == 0)
                 return null;
             var root = $"chara/weapon/w{item.Model:0000}/obj/body/b{item.ModelType:0000}";
-            var (material, mask) = await ReadImc($"{root}/b{item.ModelType:0000}.imc", 0, item.Variant, token);
-            return new Part(slot.Key, $"{root}/model/w{item.Model:0000}b{item.ModelType:0000}.mdl", Material: material, Mask: mask,
+            var path = $"{root}/model/w{item.Model:0000}b{item.ModelType:0000}.mdl";
+            var imc = ReadImc($"{root}/b{item.ModelType:0000}.imc", 0, item.Variant, token);
+            var model = pack.ReadAsync(path, token);
+            await Task.WhenAll(imc, model);
+            var (material, mask) = await imc;
+            return new Part(slot.Key, path, await model, Material: material, Mask: mask,
                 Stain1: item.Stain1, Stain2: item.Stain2);
         }
         var category = index <= 6 ? "equipment" : "accessory";
@@ -349,7 +404,8 @@ public sealed class CharacterScene(SqPackArchive pack)
         && attr.StartsWith(prefix, StringComparison.Ordinal) && attr[^1] is >= 'a' and <= 'z'
         && (mask & (1 << (attr[^1] - 'a'))) == 0;
 
-    private async Task<SceneMaterial> ResolveMaterial(string[] paths, Part part, string name, Func<string, string, Task<string?>> load,
+    private async Task<SceneMaterial> ResolveMaterial(string[] paths, Part part, string name,
+        Func<Dictionary<string, string>, Task<Dictionary<string, string>>> load,
         SortedSet<string> warnings, CharacterData catalog, CancellationToken token)
     {
         var face = part.Slot == "face";
@@ -365,11 +421,7 @@ public sealed class CharacterScene(SqPackArchive pack)
                 warnings.Add($"材质无法解析 · {FileName(path)}");
                 continue;
             }
-            var maps = new Dictionary<string, string>(StringComparer.Ordinal);
-            if (parsed.Shader != "characterocclusion.shpk")
-                foreach (var (role, texture) in parsed.Maps)
-                    if (await load(texture, role) is { } id)
-                        maps[role] = id;
+            var maps = parsed.Shader == "characterocclusion.shpk" ? new Dictionary<string, string>() : await load(parsed.Maps);
             return new SceneMaterial(parsed.Shader, maps, parsed.Palette, face, dyes, parsed.AlphaCutoff,
                 parsed.DiffuseTint, parsed.SpecularTint, parsed.ScleraTint, parsed.EyeReflection, parsed.EyeEmission);
         }

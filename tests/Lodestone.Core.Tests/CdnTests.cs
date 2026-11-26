@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -19,7 +20,7 @@ public sealed class CdnTests : IDisposable
     [Fact]
     public async Task VersionMatchesPythonAndReusesVerifiedCache()
     {
-        using var handler = new TestCdn();
+        using var handler = new TestCdn { RequireConcurrentChunks = true };
         using var cdn = new OfficialCdnClient(handler, new FixedTimeProvider());
         var service = new GameVersionService(cdn, cache);
         var progress = new List<VersionDownloadProgress>();
@@ -32,8 +33,8 @@ public sealed class CdnTests : IDisposable
         Assert.Equal(first with { FromCache = true }, second);
         Assert.Equal([0, BlockSize, BlockSize + 17], progress.Select(value => value.BytesRead));
         Assert.Equal(3, handler.Ranges.Count);
-        Assert.Equal((0L, BlockSize - 1L), handler.Ranges[1]);
-        Assert.Equal((BlockSize, BlockSize + 16L), handler.Ranges[2]);
+        Assert.Contains((0L, BlockSize - 1L), handler.Ranges);
+        Assert.Contains(((long)BlockSize, BlockSize + 16L), handler.Ranges);
         Assert.All(progress, value => Assert.Equal(SampleExe.LongLength, value.TotalBytes));
     }
 
@@ -159,11 +160,13 @@ public sealed class CdnTests : IDisposable
 
     private sealed class TestCdn : HttpMessageHandler
     {
-        public List<(long Start, long End)> Ranges { get; } = [];
+        private readonly TaskCompletionSource secondChunk = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentQueue<(long Start, long End)> Ranges { get; } = new();
         public string FileHash { get; set; } = CdnTests.FileHash;
         public string? Fault { get; set; }
         public string? AddFile { get; init; }
         public bool IncludeVersion { get; init; } = true;
+        public bool RequireConcurrentChunks { get; init; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -195,9 +198,16 @@ public sealed class CdnTests : IDisposable
             var range = Assert.Single(request.Headers.Range!.Ranges);
             var start = Assert.IsType<long>(range.From);
             var end = Assert.IsType<long>(range.To);
-            Ranges.Add((start, end));
-            var data = request.RequestUri!.AbsolutePath.Contains("/ex1/", StringComparison.Ordinal)
-                ? Encoding.ASCII.GetBytes(Version) : SampleExe;
+            Ranges.Enqueue((start, end));
+            var isVersion = request.RequestUri!.AbsolutePath.Contains("/ex1/", StringComparison.Ordinal);
+            if (RequireConcurrentChunks && !isVersion)
+            {
+                if (start == 0)
+                    await secondChunk.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+                else
+                    secondChunk.TrySetResult();
+            }
+            var data = isVersion ? Encoding.ASCII.GetBytes(Version) : SampleExe;
             var bytes = data.AsSpan((int)start, (int)(end - start + 1)).ToArray();
             var body = Fault switch { "truncated" => bytes[..^1], "too-long" => [..bytes, 0], _ => bytes };
             var response = new HttpResponseMessage(Fault == "status" ? HttpStatusCode.OK : HttpStatusCode.PartialContent)

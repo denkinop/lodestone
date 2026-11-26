@@ -98,6 +98,8 @@ public sealed class ExdTests
 
     private sealed class XivApiFixture : HttpMessageHandler
     {
+        private readonly TaskCompletionSource itemStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource categoryStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool ChangeVersionDuringWeather { get; set; }
 
         private const string Item = """
@@ -127,23 +129,33 @@ public sealed class ExdTests
             ["Weather"] = """{"Name":"测试天气","Icon":{"path_hr1":"ui/icon/060000/060201_hr1.tex"}}"""
         };
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var uri = request.RequestUri!;
             Assert.Equal("xivapi-v2.xivcdn.com", uri.Host);
             if (uri.AbsolutePath == "/api/asset")
             {
                 Assert.Equal("image/webp", Assert.Single(request.Headers.Accept).MediaType);
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new ByteArrayContent(ExdCatalog.Bundled.Weather.Weather[1].Icon)
-                });
+                };
             }
             var table = uri.Segments[^1];
             Assert.Contains("language=chs", uri.Query);
             var nextPage = uri.Query.Contains("&after=", StringComparison.Ordinal);
             if (table != "EquipSlotCategory" || nextPage)
                 Assert.Contains("&schema=fixture-schema", uri.Query);
+            if (!nextPage && table == "Item")
+            {
+                itemStarted.TrySetResult();
+                await categoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+            if (!nextPage && table == "ItemUICategory")
+            {
+                categoryStarted.TrySetResult();
+                await itemStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            }
 
             var rows = !nextPage ? Row(1, Fields[table])
                 : table == "Item" && uri.Query.EndsWith("&after=1", StringComparison.Ordinal)
@@ -151,7 +163,7 @@ public sealed class ExdTests
                     : "[]";
             var version = ChangeVersionDuringWeather && table == "Weather" ? "fixture-2" : "fixture-1";
             var json = $$"""{"version":"{{version}}","schema":"fixture-schema","rows":{{rows}}}""";
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) };
         }
 
         private static string Row(int id, string fields) => $$"""[{"row_id":{{id}},"fields":{{fields}}}]""";

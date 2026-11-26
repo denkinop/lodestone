@@ -218,19 +218,13 @@ internal sealed class GamePreview(GamePreviewSource source, Func<string, Preview
             var name = $"icon-v2-{icon}.png";
             if (PreviewCache.ReadPng(state.Character, name) is { } cached)
                 return new MemoryStream(cached, writable: false);
-            await buildLock.WaitAsync(token);
-            try
-            {
-                var (builder, _) = await source.GetAsync(token);
-                var bytes = await builder.ReadIconAsync(icon, token);
-                if (bytes is null)
-                    return null;
-                token.ThrowIfCancellationRequested();
-                try { PreviewCache.SavePng(state.Character, name, bytes); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-                return new MemoryStream(bytes, writable: false);
-            }
-            finally { buildLock.Release(); }
+            var bytes = await source.ReadIconAsync(icon, token);
+            if (bytes is null)
+                return null;
+            token.ThrowIfCancellationRequested();
+            try { PreviewCache.SavePng(state.Character, name, bytes); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            return new MemoryStream(bytes, writable: false);
         }
         catch (Exception ex) when (ex is IOException or OperationCanceledException or OverflowException or ArgumentException
             or ObjectDisposedException)
