@@ -146,7 +146,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
   isolation: isolate;
   overflow: hidden;
   border-radius: 12px;
-  background: var(--preview-background);
+  background: #b8c4d4;
 }
 .hero-frame.hero-still {
   background:
@@ -253,6 +253,13 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .hero-export:hover { background: var(--blue-hover); }
 .hero-reset { position: absolute; display: grid; place-items: center; top: 12px; right: 12px; background: #172e52d9; color: #fff; padding: 9px; }
 .hero-reset:hover { background: #34517b; }
+.hero-camera-height {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  height: clamp(72px, 42%, 148px);
+}
 .hero-message {
   position: absolute;
   bottom: 12px;

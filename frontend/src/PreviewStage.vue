@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { androidClient, exportAndroidPortrait, prepareGamePreview, releaseGamePreview, saveGamePortrait, type GameGear } from './bridge'
+import CameraHeightSlider from './CameraHeightSlider.vue'
 import type { Character } from './character'
 import { jobIcon, jobName, lobbyJobIcon, lobbyJobName } from './jobs'
 import { portraitPng } from './portrait-export'
@@ -17,6 +18,7 @@ type View = 'full' | 'portrait'
 type Viewer = import('./renderer/viewer.js').Viewer
 type Resources = { scene: string; textureRoot: string }
 const view = ref<View>('full')
+const cameraHeight = ref(0)
 const canvas = ref<HTMLCanvasElement>()
 const offscreen = ref<HTMLCanvasElement>()
 const live = ref(false)
@@ -45,8 +47,19 @@ const lifetime = new AbortController()
 
 function setView(mode: View) {
   view.value = mode
+  cameraHeight.value = 0
   viewer?.setMode(mode)
   viewer?.setHidden('head', hideHelmet.value || mode === 'portrait')
+}
+
+function setCameraHeight(height: number) {
+  cameraHeight.value = height
+  viewer?.setCameraHeight(height)
+}
+
+function resetCamera() {
+  cameraHeight.value = 0
+  viewer?.reset()
 }
 
 async function imageFrom(url: string) {
@@ -133,6 +146,7 @@ function stopLive() {
   request = undefined
   viewer?.dispose()
   viewer = undefined
+  cameraHeight.value = 0
   live.value = false
   busy.value = false
 }
@@ -240,9 +254,11 @@ onBeforeUnmount(() => {
             <canvas ref="canvas" v-show="!busy" tabindex="0" aria-label="三维角色预览，可拖动或用方向键旋转"></canvas>
           </div>
         </div>
-        <button v-if="live && !busy" type="button" class="hero-reset" title="还原视角" aria-label="还原视角" @click="viewer?.reset()">
+        <button v-if="live && !busy" type="button" class="hero-reset" title="还原视角" aria-label="还原视角" @click="resetCamera">
           <UiIcon name="focus" :size="18" />
         </button>
+        <CameraHeightSlider v-if="live && !busy" class="hero-camera-height"
+          :model-value="cameraHeight" @update:model-value="setCameraHeight" />
         <p v-if="message || (capturing && !staticPortrait) || !character.appearance" class="hero-message" role="status">
           {{ message || (capturing ? '正在准备角色图片…' : character.detailError || '暂无角色外观') }}
         </p>

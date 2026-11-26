@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { prepareWardrobePreview, releaseWardrobePreview, searchWardrobe,
   type GameCharacter, type GameGear, type WardrobeChange, type WardrobeItem } from './bridge'
+import CameraHeightSlider from './CameraHeightSlider.vue'
 import CharacterSettingsPrompt from './CharacterSettingsPrompt.vue'
 import PageHeading from './PageHeading.vue'
 import UiIcon from './UiIcon.vue'
@@ -38,6 +39,7 @@ const searchBusy = ref(false)
 const searchError = ref('')
 const previewBusy = ref(false)
 const previewError = ref('')
+const cameraHeight = ref(0)
 const showHead = ref(true)
 const showPortrait = ref(true)
 const pending = shallowRef(props.draft)
@@ -188,6 +190,16 @@ function toggleHead() {
   viewer?.setHidden('head', !showHead.value)
 }
 
+function setCameraHeight(height: number) {
+  cameraHeight.value = height
+  viewer?.setCameraHeight(height)
+}
+
+function resetCamera() {
+  cameraHeight.value = 0
+  viewer?.reset()
+}
+
 function hideImage(event: Event) {
   (event.currentTarget as HTMLImageElement).hidden = true
 }
@@ -224,9 +236,10 @@ onBeforeUnmount(() => {
             alt="当前角色外观" @error="showPortrait = false">
           <canvas ref="canvas" tabindex="0" aria-label="3D 角色预览，可拖动或用方向键旋转" :style="{ visibility: shown ? undefined : 'hidden' }" />
           <div v-if="shown" class="wardrobe-camera" aria-label="预览视角控制">
+            <CameraHeightSlider class="wardrobe-camera-height" :model-value="cameraHeight" @update:model-value="setCameraHeight" />
             <button type="button" aria-label="放大" title="放大" @click="viewer?.changeZoom(.85)">+</button>
             <button type="button" aria-label="缩小" title="缩小" @click="viewer?.changeZoom(1.18)">−</button>
-            <button type="button" aria-label="还原视角" title="还原视角" @click="viewer?.reset()"><UiIcon name="focus" :size="17" /></button>
+            <button type="button" aria-label="还原视角" title="还原视角" @click="resetCamera"><UiIcon name="focus" :size="17" /></button>
           </div>
         </div>
         <div class="wardrobe-tools">
@@ -313,10 +326,15 @@ onBeforeUnmount(() => {
 .wardrobe-figure canvas { touch-action: none; }
 .wardrobe-figure canvas:focus-visible { outline-offset: -3px; }
 .wardrobe-portrait { position: absolute; inset: 0; object-fit: contain; pointer-events: none; }
-.wardrobe-camera { position: absolute; right: 12px; bottom: 12px; display: grid; gap: 5px; }
+.wardrobe-camera {
+  position: absolute; inset: 12px 12px 12px auto; display: flex; flex-direction: column;
+  align-items: center; justify-content: end; gap: 5px; pointer-events: none;
+}
+.wardrobe-camera-height { flex: 1 1 148px; min-height: 0; max-height: 148px; margin-bottom: 4px; pointer-events: auto; }
 .wardrobe-camera button {
-  display: grid; place-items: center; width: 42px; height: 42px; padding: 0; border: 1px solid var(--line);
+  display: grid; place-items: center; flex: none; width: 42px; height: 42px; padding: 0; border: 1px solid var(--line);
   border-radius: var(--control-radius); background: #ffffffed; color: var(--navy); font-size: 1.12rem;
+  pointer-events: auto;
 }
 .wardrobe-camera button:hover { background: var(--blue-light); }
 .wardrobe-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 7px 12px; padding: 9px 12px; }
@@ -387,7 +405,7 @@ onBeforeUnmount(() => {
   .wardrobe-stage { position: static; scroll-margin-top: calc(58px + env(safe-area-inset-top)); }
   .wardrobe-figure { height: clamp(228px, 41dvh, 420px); }
   .wardrobe-character { top: 12px; left: 12px; }
-  .wardrobe-camera { bottom: 8px; right: 8px; }
+  .wardrobe-camera { inset: 8px 8px 8px auto; }
   .wardrobe-camera button { width: 44px; height: 44px; }
   .wardrobe-slots { padding: 12px; }
   .wardrobe-catalog { display: none; }

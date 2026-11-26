@@ -184,8 +184,9 @@ export interface WardrobeChange {
   name?: string
 }
 
+// HybridWebView also sends these arguments in an HTTP header.
 export const searchWardrobe = (slot: string, query: string, page: number) =>
-  invokeClient<{ items: WardrobeItem[]; more: boolean }>('SearchWardrobe', [slot, query, page])
+  invokeClient<{ items: WardrobeItem[]; more: boolean }>('SearchWardrobe', [slot, encodeURIComponent(query), page])
 
 export async function prepareWardrobePreview(characterId: string, requestId: string, changes: readonly WardrobeChange[]) {
   const response = await invokeClient<{

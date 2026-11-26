@@ -253,10 +253,17 @@ export class Viewer {
         this.requestFrame();
     }
 
+    /** @param {number} height */
+    setCameraHeight(height) {
+        this.cameraHeight = Math.max(-1, Math.min(1, height));
+        this.requestFrame();
+    }
+
     reset() {
         this.yaw = this.mode === "gear" ? 0.27 : 0;
         this.elevation = this.mode === "gear" ? 0.022 : 0;
         this.zoom = 1;
+        this.cameraHeight = 0;
         this.requestFrame();
     }
 
@@ -452,6 +459,7 @@ export class Viewer {
         const eyes = this.scene.eyeCenters;
         const eyeMidpoint = eyes?.[0].map((value, i) => (value + eyes[1][i]) * 0.5);
         let range = Math.max(size[1] * 1.14, Math.hypot(size[0], size[2]) * 1.08 / aspect, 0.025);
+        let framingHeight = size[1];
         const portrait = this.mode === "portrait" && this.faceBounds !== null;
         if (portrait) {
             center[0] = eyeMidpoint?.[0] ?? (this.faceBounds.min[0] + this.faceBounds.max[0]) * 0.5;
@@ -461,7 +469,9 @@ export class Viewer {
             center[2] = this.faceBounds.max[2] * 0.74;
             const faceWidth = this.faceBounds.max[0] - this.faceBounds.min[0];
             range = Math.max(headHeight * 1.02, faceWidth * 1.08 / aspect);
+            framingHeight = headHeight;
         }
+        center[1] += this.cameraHeight * framingHeight * 0.5;
         const distance = portrait ? Math.max(0.42, range * 1.85) : Math.max(0.25, 3 * Math.max(...size));
         range *= this.zoom;
         const radius = distance * Math.cos(this.elevation);

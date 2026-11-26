@@ -179,8 +179,8 @@ internal sealed partial class ClientCommands : IDisposable
     public Task<GamePreviewResult> PrepareGamePreview(string characterId, string requestId) => preview.PrepareAsync(characterId, requestId);
     public bool ReleaseGamePreview(string requestId) => preview.Release(requestId);
     public bool SaveGamePortrait(string requestId, string mode, string png) => preview.SavePortrait(requestId, mode, png);
-    public Task<WardrobePage> SearchWardrobe(string slot, string query, int page) => Task.Run(() =>
-        Exd.Current.Character.Wardrobe.Search(slot, query, page));
+    public Task<WardrobePage> SearchWardrobe(string slot, string encodedQuery, int page) => Task.Run(() =>
+        Exd.Current.Character.Wardrobe.Search(slot, Uri.UnescapeDataString(encodedQuery), page));
 
     public Task<GamePreviewResult> PrepareWardrobePreview(string characterId, string requestId, string changes)
     {
