@@ -194,6 +194,12 @@ internal sealed class CommunityBrowser
                 Session.JobReadFailed();
             else
                 Session.ObserveCurrentRole(data);
+            if (Session.Snapshot is { State: "connected", JobsStatus: "unavailable" })
+            {
+                var status = await ReadApiAsync(RisingStonesSession.StatusUrl);
+                if (status is not null && !lifetime.IsCancellationRequested)
+                    Session.ObserveLoginCheck(status);
+            }
             await SaveCookiesAsync();
         }
 
@@ -210,12 +216,17 @@ internal sealed class CommunityBrowser
             try
             {
                 using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, budget.Token);
-                if (response.StatusCode != HttpStatusCode.OK)
-                    return null;
-                using var stream = await response.Content.ReadAsStreamAsync(budget.Token);
-                var buffer = new byte[RisingStonesSession.MaxProfileBytes + 1];
-                var count = await stream.ReadAtLeastAsync(buffer, buffer.Length, false, budget.Token);
-                return count == buffer.Length ? null : buffer[..count];
+                byte[]? body = null;
+                if (response.StatusCode is HttpStatusCode.OK or HttpStatusCode.Forbidden)
+                {
+                    using var stream = await response.Content.ReadAsStreamAsync(budget.Token);
+                    var buffer = new byte[RisingStonesSession.MaxProfileBytes + 1];
+                    var count = await stream.ReadAtLeastAsync(buffer, buffer.Length, false, budget.Token);
+                    if (count < buffer.Length)
+                        body = buffer[..count];
+                }
+                return !lifetime.IsCancellationRequested && !Session.ObserveAuthenticationFailure((int)response.StatusCode, body)
+                    && response.StatusCode == HttpStatusCode.OK ? body : null;
             }
             catch (Exception ex) when (IsRequestError(ex)) { return null; }
         }

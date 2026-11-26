@@ -13,10 +13,11 @@ public sealed record WardrobeItem(
 public sealed record WardrobePage([property: JsonPropertyName("items")] IReadOnlyList<WardrobeItem> Items,
     [property: JsonPropertyName("more")] bool More);
 
-public sealed record WardrobeChange(string Slot, int ItemId);
+public sealed record WardrobeChange(string Slot, int? ItemId = null, byte? Stain1 = null, byte? Stain2 = null);
 
 internal sealed record WardrobeOutfit(IReadOnlyList<CharacterEquipment> Equipment,
-    IReadOnlyDictionary<string, string> CoveredSlots, IReadOnlySet<string> TriedSlots);
+    IReadOnlyDictionary<string, string> CoveredSlots, IReadOnlySet<string> TriedSlots,
+    IReadOnlyDictionary<string, int> DyeChannels);
 
 public sealed class WardrobeCatalog
 {
@@ -27,19 +28,29 @@ public sealed class WardrobeCatalog
     private readonly List<Entry>[] bySlot = Enumerable.Range(0, SlotCount).Select(_ => new List<Entry>()).ToArray();
     private readonly Dictionary<(int Slot, int Id), Entry> byId = [];
     private readonly Dictionary<(int Slot, ulong Model), int> modelCoverage = [];
+    private readonly Dictionary<(int Slot, ulong Model), int> modelDyeChannels = [];
     private readonly HashSet<int> icons = [];
+    private readonly HashSet<int> dyeIds;
+    public IReadOnlyList<EquipmentStain> Dyes { get; }
 
-    internal WardrobeCatalog() { }
-
-    internal void Add(int slot, ulong model, EquipmentCandidate candidate, int covered)
+    internal WardrobeCatalog(IEnumerable<EquipmentStain> stains)
     {
-        if (slot >= SlotCount || (model & 0xffff) == 0 || model > uint.MaxValue || candidate.Id <= 0)
+        Dyes = stains.Where(stain => stain.Id is > 0 and <= byte.MaxValue
+            && !stain.Name.StartsWith("染色 ", StringComparison.Ordinal)
+            && stain.Color is { Length: 7 } color && color[0] == '#' && color.Skip(1).All(Uri.IsHexDigit))
+            .OrderBy(stain => stain.Id).ToArray();
+        dyeIds = Dyes.Select(stain => stain.Id).ToHashSet();
+    }
+
+    internal void Add(int slot, ulong model, EquipmentCandidate candidate, int covered, int dyeChannels)
+    {
+        if (slot >= SlotCount || (model & 0xffff) == 0 || model > uint.MaxValue || candidate.Id <= 0 || dyeChannels is < 0 or > 2)
             throw new InvalidDataException("EXD 包含无效的衣橱装备");
         covered &= EquipmentMask & ~(1 << slot);
         var details = candidate.Details!;
         var item = new WardrobeItem(candidate.Id, candidate.Name, candidate.Icon, details.Rarity, details.ItemLevel,
             details.EquipLevel, details.JobCategory, SlotsIn(covered).Select(index => CharacterData.Slots[index].Key).ToArray());
-        var entry = new Entry(item, model, covered);
+        var entry = new Entry(item, model, covered, dyeChannels);
         if (!byId.TryAdd((slot, item.Id), entry))
             throw new InvalidDataException("EXD 包含重复的衣橱装备");
         bySlot[slot].Add(entry);
@@ -48,6 +59,7 @@ public sealed class WardrobeCatalog
         var modelKey = (slot, model);
         if (!modelCoverage.TryAdd(modelKey, covered) && modelCoverage[modelKey] != covered)
             modelCoverage[modelKey] = 0;
+        modelDyeChannels[modelKey] = Math.Max(modelDyeChannels.GetValueOrDefault(modelKey), dyeChannels);
     }
 
     internal void Sort()
@@ -58,6 +70,9 @@ public sealed class WardrobeCatalog
 
     internal int CoveredMask(int slot, int itemId, ulong model) =>
         byId.TryGetValue((slot, itemId), out var entry) && entry.Model == model ? entry.Covered : 0;
+
+    internal int DyeChannels(int slot, int itemId, ulong model) =>
+        byId.TryGetValue((slot, itemId), out var entry) && entry.Model == model ? entry.DyeChannels : 0;
 
     public bool HasIcon(int id) => icons.Contains(id);
 
@@ -81,6 +96,8 @@ public sealed class WardrobeCatalog
         var equipment = new List<CharacterEquipment>();
         var coveredSlots = new Dictionary<string, string>(StringComparer.Ordinal);
         var triedSlots = new HashSet<string>(StringComparer.Ordinal);
+        var dyeChannels = new Dictionary<string, int>(StringComparer.Ordinal);
+        var dyedOriginals = new Dictionary<string, CharacterEquipment>(StringComparer.Ordinal);
         var claimed = 0;
         var changed = 0;
 
@@ -93,16 +110,29 @@ public sealed class WardrobeCatalog
                 throw new SqPackException("试穿部位无效");
             var bit = 1 << slot;
             changed |= bit;
+            var hasDye = change.Stain1.HasValue || change.Stain2.HasValue;
+            if (change.ItemId is null)
+            {
+                var worn = original.FirstOrDefault(item => item.Slot == change.Slot && item.Model > 0);
+                if (worn is null || !hasDye)
+                    throw new SqPackException("该部位没有可染色的装备");
+                dyedOriginals.Add(change.Slot, ApplyDyes(worn, change, OriginalDyeChannels(slot, worn)));
+                continue;
+            }
             if (change.ItemId == 0)
             {
+                if (hasDye)
+                    throw new SqPackException("无法为已卸下的装备染色");
                 claimed |= bit;
                 continue;
             }
-            if (!byId.TryGetValue((slot, change.ItemId), out var entry))
+            if (!byId.TryGetValue((slot, change.ItemId.Value), out var entry))
                 throw new SqPackException($"该物品无法试穿于{CharacterData.Slots[slot].Name}");
+            var selected = new CharacterEquipment(change.Slot, (ushort)entry.Model, 0, (ushort)(entry.Model >> 16), 0, 0);
+            selected = ApplyDyes(selected, change, entry.DyeChannels);
             if ((claimed & (bit | entry.Covered)) != 0)
                 continue;
-            Apply(new CharacterEquipment(change.Slot, (ushort)entry.Model, 0, (ushort)(entry.Model >> 16), 0, 0), slot, entry.Covered);
+            Apply(selected, slot, entry.Covered, entry.DyeChannels);
             triedSlots.Add(change.Slot);
         }
 
@@ -115,17 +145,32 @@ public sealed class WardrobeCatalog
         foreach (var (item, slot, covered) in remaining.Where(entry => entry.Slot >= FirstSlot).OrderByDescending(entry => entry.Covered != 0))
         {
             if ((claimed & ((1 << slot) | covered)) == 0)
-                Apply(item, slot, covered);
+                Apply(dyedOriginals.GetValueOrDefault(item.Slot, item), slot, covered, OriginalDyeChannels(slot, item));
         }
-        return new(equipment, coveredSlots, triedSlots);
+        return new(equipment, coveredSlots, triedSlots, dyeChannels);
 
-        void Apply(CharacterEquipment item, int slot, int covered)
+        void Apply(CharacterEquipment item, int slot, int covered, int channels)
         {
             equipment.Add(item);
+            dyeChannels[item.Slot] = channels;
             claimed |= (1 << slot) | covered;
             foreach (var index in SlotsIn(covered))
                 coveredSlots.Add(CharacterData.Slots[index].Key, item.Slot);
         }
+    }
+
+    private int OriginalDyeChannels(int slot, CharacterEquipment item) => Math.Max(
+        modelDyeChannels.GetValueOrDefault((slot, (ulong)item.Model | (ulong)item.Variant << 16)),
+        item.Stain2 > 0 ? 2 : item.Stain1 > 0 ? 1 : 0);
+
+    private CharacterEquipment ApplyDyes(CharacterEquipment item, WardrobeChange change, int channels)
+    {
+        if (change.Stain1.HasValue && channels < 1 || change.Stain2.HasValue && channels < 2)
+            throw new SqPackException("该装备不支持此染色通道");
+        if (change.Stain1 is > 0 && !dyeIds.Contains(change.Stain1.Value)
+            || change.Stain2 is > 0 && !dyeIds.Contains(change.Stain2.Value))
+            throw new SqPackException("染剂不可用");
+        return item with { Stain1 = change.Stain1 ?? item.Stain1, Stain2 = change.Stain2 ?? item.Stain2 };
     }
 
     private static int SlotIndex(string slot) => Array.FindIndex(CharacterData.Slots, value => value.Key == slot);
@@ -137,5 +182,5 @@ public sealed class WardrobeCatalog
                 yield return index;
     }
 
-    private sealed record Entry(WardrobeItem Item, ulong Model, int Covered);
+    private sealed record Entry(WardrobeItem Item, ulong Model, int Covered, int DyeChannels);
 }

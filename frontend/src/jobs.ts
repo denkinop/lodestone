@@ -22,6 +22,11 @@ export interface JobProgress {
   levels: Partial<Record<JobId, number | null>>
 }
 
+export interface JobSyncNotice {
+  message: string
+  action?: 'retry' | 'login'
+}
+
 const names = new Map(jobGroups.flatMap(group => Array.from<Job>(group.jobs)))
 export const jobName = (id: JobId) => names.get(id) ?? id
 export const jobIcon = (id: JobId) => `${import.meta.env.BASE_URL}images/jobs/${id}.png`

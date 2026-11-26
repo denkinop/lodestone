@@ -62,10 +62,8 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             if (!areas.TryGetValue(areaId, out var selected))
                 return Failed("请选择有效大区");
             area = selected;
-            ClearSession();
             current = operation = new LoginOperation(id, "正在连接盛趣");
         }
-        SessionChanged?.Invoke();
 
         SdoAuthenticator? auth = null;
         try
@@ -113,6 +111,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                 {
                     Authorization = authorization, CommunityAttempt = attempt,
                 };
+                ClearSession();
                 session = next;
                 response = Present(next);
                 auth = null;

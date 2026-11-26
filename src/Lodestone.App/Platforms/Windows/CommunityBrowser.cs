@@ -18,6 +18,7 @@ internal sealed class CommunityBrowser
     private Func<SavedCommunityCookie[], Task>? saveCookies;
     private int generation;
     private Uri? jobReadUri;
+    private Uri? jobLoginCheckUri;
     private Uri? allowedRoleChange;
     private bool selectingRole;
 
@@ -65,19 +66,37 @@ internal sealed class CommunityBrowser
             if (response is null)
                 current.JobReadFailed();
             else
-            {
                 current.ObserveCurrentRole(response);
+
+            if (current.Snapshot is { State: "connected", JobsStatus: "unavailable" } && InPortal(core))
+                await CheckJobLoginAsync(core, current, revision);
+            if (response is not null && generation == revision && InPortal(core))
                 await SaveVerifiedCookiesAsync(core, current, revision);
-            }
         }
         return true;
+    }
+
+    private async Task CheckJobLoginAsync(CoreWebView2 core, RisingStonesSession current, int revision)
+    {
+        var request = jobLoginCheckUri = OfficialRequest(RisingStonesSession.StatusUrl);
+        try
+        {
+            var status = await FetchOfficialAsync(core, request);
+            if (status is not null && generation == revision && InPortal(core))
+                current.ObserveLoginCheck(status);
+        }
+        finally
+        {
+            if (jobLoginCheckUri == request)
+                jobLoginCheckUri = null;
+        }
     }
 
     internal async Task<string?> SelectRoleAsync(CommunityCharacter target, Func<bool> isCurrentCharacter)
     {
         if (webView?.CoreWebView2 is not { } core || session is not { CanSelectRole: true } current || !InPortal(core))
             return "石之家登录验证后才能切换角色。";
-        if (selectingRole || current.Snapshot.JobsStatus == "loading")
+        if (selectingRole || jobLoginCheckUri is not null || current.Snapshot.JobsStatus == "loading")
             return "石之家正在读取角色信息。";
         if (current.HasSelectedRole(target))
         {
@@ -262,16 +281,19 @@ internal sealed class CommunityBrowser
             core.WebResourceResponseReceived += async (_, args) =>
             {
                 if (generation != revision || !InPortal(core) || args.Request.Method != "GET"
-                    || !Uri.TryCreate(args.Request.Uri, UriKind.Absolute, out var uri))
+                    || !Uri.TryCreate(args.Request.Uri, UriKind.Absolute, out var uri) || uri == jobLoginCheckUri)
                     return;
                 var login = RisingStonesSession.IsLoginStatus(uri);
-                if (args.Response.StatusCode != 200 || !login && !RisingStonesSession.IsBindingStatus(uri))
+                if (!login && !RisingStonesSession.IsBindingStatus(uri))
                     return;
 
                 try
                 {
-                    var bytes = await ReadResponseAsync(args.Response, 64 * 1024);
-                    if (bytes is null || generation != revision || !InPortal(core))
+                    var status = args.Response.StatusCode;
+                    var bytes = status is 200 or 403 ? await ReadResponseAsync(args.Response, 64 * 1024) : null;
+                    if (generation != revision || !InPortal(core))
+                        return;
+                    if (current.ObserveAuthenticationFailure(status, bytes) || status != 200 || bytes is null)
                         return;
                     if (login)
                     {
@@ -356,9 +378,11 @@ internal sealed class CommunityBrowser
     private static Uri OfficialRequest(string url) => new(url + (url.Contains('?') ? '&' : '?')
         + "tempsuid=" + Guid.NewGuid().ToString("D"));
 
-    private static async Task<byte[]?> FetchOfficialAsync(CoreWebView2 core, Uri request, Dictionary<string, string>? form = null)
+    private async Task<byte[]?> FetchOfficialAsync(CoreWebView2 core, Uri request, Dictionary<string, string>? form = null)
     {
         var method = form is null ? "GET" : "POST";
+        var revision = generation;
+        var current = session;
         var response = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
         async void Receive(CoreWebView2 sender, CoreWebView2WebResourceResponseReceivedEventArgs args)
         {
@@ -366,8 +390,12 @@ internal sealed class CommunityBrowser
                 return;
             try
             {
-                response.TrySetResult(args.Response.StatusCode == 200 && InPortal(sender)
-                    ? await ReadResponseAsync(args.Response, RisingStonesSession.MaxProfileBytes) : null);
+                var status = args.Response.StatusCode;
+                var bytes = status is 200 or 403 ? await ReadResponseAsync(args.Response, RisingStonesSession.MaxProfileBytes) : null;
+                if (generation != revision || !InPortal(sender) || current?.ObserveAuthenticationFailure(status, bytes) == true)
+                    response.TrySetResult(null);
+                else
+                    response.TrySetResult(status == 200 ? bytes : null);
             }
             catch (Exception ex) when (ex is COMException or IOException or InvalidOperationException)
             {
@@ -426,6 +454,7 @@ internal sealed class CommunityBrowser
         window = null;
         webView = null;
         jobReadUri = null;
+        jobLoginCheckUri = null;
         allowedRoleChange = null;
         selectingRole = false;
         browser?.Close();

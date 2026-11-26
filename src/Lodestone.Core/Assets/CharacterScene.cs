@@ -18,7 +18,8 @@ public sealed record SceneGear([property: JsonPropertyName("slot")] string Slot,
     [property: JsonPropertyName("model")] int Model, [property: JsonPropertyName("variant")] int Variant,
     [property: JsonPropertyName("loaded")] bool Loaded, [property: JsonPropertyName("names")] string[] Names,
     [property: JsonPropertyName("candidates")] IReadOnlyList<EquipmentCandidate> Candidates,
-    [property: JsonPropertyName("stains")] EquipmentStain?[] Stains);
+    [property: JsonPropertyName("stains")] EquipmentStain?[] Stains,
+    [property: JsonPropertyName("dyeChannels")] int DyeChannels = 0);
 public sealed record SceneData(IReadOnlyList<SceneMesh> Meshes, IReadOnlyDictionary<string, SceneMaterial> Materials,
     IReadOnlyDictionary<string, string> Colors, IReadOnlyList<SceneGear> Gear, bool Posing, int? IdleRace,
     float[] EyePlane, float[][]? EyeCenters, float[] FaceForward, IReadOnlyDictionary<string, int> Appearance,
@@ -30,6 +31,9 @@ public sealed class CharacterScene(SqPackArchive pack)
 {
     private const long MaxSceneBytes = 64L << 20;
     private static readonly int[] Races = [0, 101, 501, 1101, 701, 901, 1301, 1501, 1701];
+    private readonly SemaphoreSlim stainingTemplateLock = new(1);
+    private StainingTemplate? currentStainingTemplate;
+    private StainingTemplate? legacyStainingTemplate;
 
     public Task<SceneAssets> BuildAsync(LobbyCharacter character, string revision, CancellationToken token) =>
         BuildAsync(character, revision, CharacterData.Instance, token);
@@ -136,7 +140,8 @@ public sealed class CharacterScene(SqPackArchive pack)
                 var paths = CharacterMaterial.Paths(part.Path, mesh.Material, part.Material).ToArray();
                 var key = $"{paths.FirstOrDefault() ?? part.Path + '/' + mesh.Material}:{part.Stain1}:{part.Stain2}:{part.Slot == "face"}";
                 if (!materials.TryGetValue(key, out var material))
-                    materials[key] = material = await ResolveMaterial(paths, part, mesh.Material, LoadTexturesAsync, warnings, data, token);
+                    materials[key] = material = await ResolveMaterial(paths, part, mesh.Material, LoadTexturesAsync, warnings, data,
+                        outfit is not null, token);
                 if (material.Shader == "characterocclusion.shpk")
                     continue;
                 var vertices = deformer.Apply(mesh, part.Source, part.Target, token);
@@ -169,6 +174,9 @@ public sealed class CharacterScene(SqPackArchive pack)
             throw new SqPackException("该角色没有可显示的面部网格");
 
         var gear = DescribeGear(character.Equipment, loaded, data);
+        if (outfit is not null)
+            for (var index = 0; index < gear.Length; index++)
+                gear[index] = gear[index] with { DyeChannels = outfit.DyeChannels.GetValueOrDefault(gear[index].Slot) };
         return new SceneAssets(new SceneData(meshes, materials, colors, gear, rig is not null, rig?.IdleRace,
             [head.M11, head.M12, head.M13, -Vector3.Dot(new Vector3(head.M11, head.M12, head.M13), head.Translation)],
             eyes, [head.M31, head.M32, head.M33], new Dictionary<string, int>
@@ -406,10 +414,10 @@ public sealed class CharacterScene(SqPackArchive pack)
 
     private async Task<SceneMaterial> ResolveMaterial(string[] paths, Part part, string name,
         Func<Dictionary<string, string>, Task<Dictionary<string, string>>> load,
-        SortedSet<string> warnings, CharacterData catalog, CancellationToken token)
+        SortedSet<string> warnings, CharacterData catalog, bool wardrobe, CancellationToken token)
     {
         var face = part.Slot == "face";
-        string?[] dyes = [catalog.StainColor(part.Stain1), catalog.StainColor(part.Stain2)];
+        string?[] dyes = wardrobe ? [null, null] : [catalog.StainColor(part.Stain1), catalog.StainColor(part.Stain2)];
         foreach (var path in paths)
         {
             if (await pack.ReadAsync(path, token) is not { } data)
@@ -422,11 +430,36 @@ public sealed class CharacterScene(SqPackArchive pack)
                 continue;
             }
             var maps = parsed.Shader == "characterocclusion.shpk" ? new Dictionary<string, string>() : await load(parsed.Maps);
+            if (wardrobe && parsed.HasDyeRows && (part.Stain1 != 0 || part.Stain2 != 0))
+            {
+                var template = await ReadStainingTemplateAsync(parsed.UsesLegacyDyeTable, token);
+                parsed.ApplyDyes(template, part.Stain1, part.Stain2);
+            }
             return new SceneMaterial(parsed.Shader, maps, parsed.Palette, face, dyes, parsed.AlphaCutoff,
                 parsed.DiffuseTint, parsed.SpecularTint, parsed.ScleraTint, parsed.EyeReflection, parsed.EyeEmission);
         }
         warnings.Add($"材质缺失 · {name.TrimStart('/')}");
         return new SceneMaterial("preview", new Dictionary<string, string>(), [], face, dyes);
+    }
+
+    private async Task<StainingTemplate> ReadStainingTemplateAsync(bool legacy, CancellationToken token)
+    {
+        await stainingTemplateLock.WaitAsync(token);
+        try
+        {
+            if ((legacy ? legacyStainingTemplate : currentStainingTemplate) is { } cached)
+                return cached;
+            var name = legacy ? "stainingtemplate.stm" : "stainingtemplate_gud.stm";
+            var bytes = await pack.ReadAsync($"chara/base_material/{name}", token)
+                ?? throw new SqPackException("当前游戏资源缺少装备染色模板");
+            var table = new StainingTemplate(bytes);
+            if (legacy)
+                legacyStainingTemplate = table;
+            else
+                currentStainingTemplate = table;
+            return table;
+        }
+        finally { stainingTemplateLock.Release(); }
     }
 
     private static Dictionary<string, string> ReadColors(byte[]? data, CharacterAppearance appearance)

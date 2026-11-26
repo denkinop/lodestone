@@ -27,7 +27,7 @@ internal sealed class XivApiExdImporter(HttpClient http)
         ("World", "Name,IsPublic,DataCenter.Region@as(raw)"),
         ("GuardianDeity", "Name"),
         ("Item", "Name,Icon@as(raw),ModelMain,ModelSub,EquipSlotCategory@as(raw),ItemUICategory@as(raw),"
-            + "ClassJobCategory@as(raw),Rarity,LevelItem@as(raw),LevelEquip,DamagePhys,DamageMag,DefensePhys,DefenseMag,"
+            + "ClassJobCategory@as(raw),Rarity,LevelItem@as(raw),LevelEquip,DamagePhys,DamageMag,DefensePhys,DefenseMag,DyeCount,"
             + "BaseParam@as(raw),BaseParamValue"),
         ("TerritoryType", "Name,Map@as(raw),PlaceName.Name,PlaceNameRegion.Name,TerritoryIntendedUse@as(raw),WeatherRate@as(raw)"),
         ("WeatherRate", "Rate,Weather@as(raw)"),
@@ -222,9 +222,7 @@ internal sealed class XivApiExdImporter(HttpClient http)
         for (var index = 2; index < Slots.Length; index++)
             if (Number(slots, Slots[index]) < 0)
                 coveredSlots |= 1 << index;
-        return coveredSlots == 0
-            ? [id, name, Number(item, "Icon@as(raw)"), models, details]
-            : [id, name, Number(item, "Icon@as(raw)"), models, details, coveredSlots];
+        return [id, name, Number(item, "Icon@as(raw)"), models, details, coveredSlots, Number(item, "DyeCount")];
     }
 
     private static IEnumerable<object[]> WorldNames(Dictionary<int, JsonElement> rows)

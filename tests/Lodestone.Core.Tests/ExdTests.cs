@@ -57,6 +57,32 @@ public sealed class ExdTests
     }
 
     [Fact]
+    public void WardrobeDyesOriginalAndTriedGearWithSeparateChannels()
+    {
+        var wardrobe = ExdCatalog.Bundled.Character.Wardrobe;
+        Assert.Contains(wardrobe.Dyes, dye => dye is { Id: 1, Name: "素雪白" });
+        Assert.DoesNotContain(wardrobe.Dyes, dye => dye.Id == 126);
+        var original = new CharacterEquipment("body", 53, 0, 1, 1, 8);
+
+        var dyedOriginal = wardrobe.Compose([original], [new("body", Stain1: 0)]);
+        var baseGear = Assert.Single(dyedOriginal.Equipment);
+        Assert.Equal(original with { Stain1 = 0 }, baseGear);
+        Assert.Equal(2, dyedOriginal.DyeChannels["body"]);
+        Assert.Empty(dyedOriginal.TriedSlots);
+        Assert.Equal(original, Assert.Single(wardrobe.Compose([original], []).Equipment));
+
+        var dyedTrial = wardrobe.Compose([original], [new("body", 2965, 1, 7)]);
+        Assert.Equal(original with { Stain2 = 7 }, Assert.Single(dyedTrial.Equipment));
+        Assert.Equal("body", Assert.Single(dyedTrial.TriedSlots));
+        Assert.Equal(2, dyedTrial.DyeChannels["body"]);
+
+        Assert.Throws<SqPackException>(() => wardrobe.Compose([], [new("head", 2629, Stain2: 1)]));
+        Assert.Throws<SqPackException>(() => wardrobe.Compose([], [new("body", 11111, Stain1: 1)]));
+        Assert.Throws<SqPackException>(() => wardrobe.Compose([], [new("body", 2965, Stain1: 255)]));
+        Assert.Throws<SqPackException>(() => wardrobe.Compose([], [new("body", Stain1: 1)]));
+    }
+
+    [Fact]
     public async Task PublishesBothCatalogsTogetherAndKeepsThePreviousSnapshotOnVersionMismatch()
     {
         var directory = Directory.CreateTempSubdirectory();
@@ -105,7 +131,7 @@ public sealed class ExdTests
         private const string Item = """
             {"Name":"测试装备","Icon@as(raw)":12,"ModelMain":1,"ModelSub":2,"EquipSlotCategory@as(raw)":1,
              "ItemUICategory@as(raw)":1,"ClassJobCategory@as(raw)":1,"Rarity":1,"LevelItem@as(raw)":3,"LevelEquip":2,
-             "DamagePhys":4,"DamageMag":5,"DefensePhys":0,"DefenseMag":0,"BaseParam@as(raw)":[1,null],"BaseParamValue":[2,0]}
+             "DamagePhys":4,"DamageMag":5,"DefensePhys":0,"DefenseMag":0,"DyeCount":1,"BaseParam@as(raw)":[1,null],"BaseParamValue":[2,0]}
             """;
 
         private static readonly Dictionary<string, string> Fields = new()

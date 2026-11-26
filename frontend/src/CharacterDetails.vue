@@ -3,11 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { icon, wikiUrl, type Character, type Equipment } from './character'
 import EquipmentRail from './EquipmentRail.vue'
 import JobLevels from './JobLevels.vue'
+import type { JobSyncNotice } from './jobs'
 import PreviewStage from './PreviewStage.vue'
 import UiIcon from './UiIcon.vue'
 
-const props = defineProps<{ character: Character; active: boolean }>()
+const props = defineProps<{ character: Character; active: boolean; jobSyncNotice?: JobSyncNotice }>()
 const emit = defineEmits<{
+  jobSync: [action: NonNullable<JobSyncNotice['action']>]
   portraitStart: [root: string]
   portraitReady: [root: string, source: string]
   portraitFinish: [root: string]
@@ -112,7 +114,7 @@ onBeforeUnmount(() => {
         </div>
       </dl>
     </section>
-    <JobLevels :progress="character.jobProgress" />
+    <JobLevels :progress="character.jobProgress" :notice="jobSyncNotice" @sync="emit('jobSync', $event)" />
   </div>
 
   <div class="character-showcase">

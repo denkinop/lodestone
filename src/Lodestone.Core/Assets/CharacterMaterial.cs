@@ -8,6 +8,10 @@ internal sealed partial record CharacterMaterial(string Shader, Dictionary<strin
     float AlphaCutoff, float[]? DiffuseTint, float[]? SpecularTint, float[]? ScleraTint, float[]? EyeReflection,
     float[]? EyeEmission)
 {
+    private uint[] DyeRows { get; init; } = [];
+    internal bool UsesLegacyDyeTable { get; private init; }
+    internal bool HasDyeRows => DyeRows.Any(row => (row & 0x3f) != 0);
+
     internal static CharacterMaterial Read(byte[] data)
     {
         var dataset = U16(data, 6);
@@ -52,11 +56,53 @@ internal sealed partial record CharacterMaterial(string Shader, Dictionary<strin
         }
 
         var constants = Constants(data, table + dataset);
+        var dyeOffset = table + rows * rows * 2;
+        var dyeBytes = table + dataset - dyeOffset;
+        uint[] dyeRows = dyeBytes switch
+        {
+            128 when rows == 32 => Enumerable.Range(0, 32).Select(row => U32(data, dyeOffset + row * 4)).ToArray(),
+            32 when rows >= 16 => Enumerable.Range(0, 16).Select(row => (uint)U16(data, dyeOffset + row * 2)).ToArray(),
+            _ => [],
+        };
         return new CharacterMaterial(shader, maps, palette,
             Unit(constants.TryGetValue(699138595, out var alpha) ? alpha[0] : 0.45f),
             Tint(constants, 0x2C2A34DD), Tint(constants, 0x141722D5), Tint(constants, 0x11C90091),
             constants.TryGetValue(0xCB0338DC, out var reflection) && reflection.Length == 3 ? reflection.Select(Color).ToArray() : null,
-            Tint(constants, 0x38A64362));
+            Tint(constants, 0x38A64362)) { DyeRows = dyeRows, UsesLegacyDyeTable = dyeBytes == 32 };
+    }
+
+    internal void ApplyDyes(StainingTemplate table, int firstStain, int secondStain)
+    {
+        Span<float> values = stackalloc float[3];
+        var usesLegacyShading = Palette.Length == 16 || Shader == "characterlegacy.shpk";
+        for (var row = 0; row < DyeRows.Length; row++)
+        {
+            var entry = DyeRows[row];
+            var template = (int)(UsesLegacyDyeTable ? entry >> 5 : (entry >> 16) & 0x7ff);
+            var channel = UsesLegacyDyeTable ? 0 : (entry >> 27) & 3;
+            var stain = channel switch { 0 => firstStain, 1 => secondStain, _ => 0 };
+            if (template == 0 || stain == 0)
+                continue;
+            // Dye flags select which material values the game template replaces.
+            for (var component = 0; component < 3; component++)
+            {
+                if ((entry & (1u << component)) == 0 || !table.TryRead(template, stain, component, values))
+                    continue;
+                if (component == 1 && values[0] == 0 && values[1] == 0 && values[2] == 0)
+                    continue;
+                for (var index = 0; index < 3; index++)
+                    Palette[row][component * 4 + index] = Color(values[index]);
+            }
+            if (UsesLegacyDyeTable && usesLegacyShading && (entry & 8) != 0 && table.TryRead(template, stain, 3, values))
+                Palette[row][3] = Unit(1 - values[0] / 16);
+            if (!UsesLegacyDyeTable && !usesLegacyShading)
+            {
+                if ((entry & 16) != 0 && table.TryRead(template, stain, 4, values))
+                    Palette[row][7] = Unit(values[0]);
+                if ((entry & 32) != 0 && table.TryRead(template, stain, 5, values))
+                    Palette[row][3] = Unit(values[0]);
+            }
+        }
     }
 
     private static Dictionary<uint, float[]> Constants(byte[] data, int offset)

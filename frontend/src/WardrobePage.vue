@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { prepareWardrobePreview, releaseWardrobePreview, searchWardrobe,
-  type GameCharacter, type GameGear, type WardrobeChange, type WardrobeItem } from './bridge'
+import { getWardrobeDyes, prepareWardrobePreview, releaseWardrobePreview, searchWardrobe,
+  type EquipmentStain, type GameCharacter, type GameGear, type WardrobeChange, type WardrobeItem } from './bridge'
 import CameraHeightSlider from './CameraHeightSlider.vue'
 import CharacterSettingsPrompt from './CharacterSettingsPrompt.vue'
 import PageHeading from './PageHeading.vue'
@@ -30,6 +30,12 @@ const canvas = ref<HTMLCanvasElement>()
 const stage = ref<HTMLElement>()
 const catalog = ref<HTMLElement>()
 const catalogTitle = ref<HTMLElement>()
+const dyeDialog = ref<HTMLDialogElement>()
+const dyeChannel = ref(1)
+const dyeQuery = ref('')
+const dyes = shallowRef<EquipmentStain[]>()
+const dyeBusy = ref(false)
+const dyeError = ref(false)
 const mobileListOpen = ref(false)
 const selectedSlot = ref('body')
 const query = ref('')
@@ -53,6 +59,10 @@ const selectedLabel = computed(() => slotLabels.get(selectedSlot.value))
 const selectedOwner = computed(() => shown.value?.covered[selectedSlot.value])
 const selectedChange = computed(() => pending.value.find(change => change.slot === selectedSlot.value))
 const selectedGear = computed(() => (shown.value?.gear ?? props.character?.gear)?.find(item => item.slot === selectedSlot.value))
+const dyeChannels = computed(() => !selectedOwner.value && selectedGear.value?.loaded ? selectedGear.value.dyeChannels ?? 0 : 0)
+const dyeOptions = computed(() => [
+  { id: 0, name: '无染色', color: null }, ...(dyes.value ?? []),
+].filter(dye => dye.name.includes(dyeQuery.value.trim())))
 const selectedItem = computed(() => shown.value?.applied.includes(selectedSlot.value)
   ? shown.value.changes.find(change => change.slot === selectedSlot.value)?.itemId : undefined)
 const canPreview = computed(() => Boolean(props.character?.race && props.character.gender))
@@ -181,8 +191,48 @@ async function updatePreview(changes: readonly WardrobeChange[]) {
 function changeSlot(itemId: number | undefined, name?: string) {
   const slot = selectedSlot.value
   const changes = pending.value.filter(change => change.slot !== slot)
-  if (itemId !== undefined) changes.push({ slot, itemId, name })
+  if (itemId !== undefined) {
+    const current = selectedChange.value
+    changes.push(current?.itemId === itemId ? current : { slot, itemId, name })
+  }
   schedulePreview(changes)
+}
+
+async function loadDyes() {
+  if (dyes.value || dyeBusy.value) return
+  dyeError.value = false
+  dyeBusy.value = true
+  try {
+    dyes.value = await getWardrobeDyes()
+  } catch {
+    dyeError.value = true
+  } finally {
+    dyeBusy.value = false
+  }
+}
+
+function openDyes(channel: number) {
+  dyeChannel.value = channel
+  dyeQuery.value = ''
+  dyeDialog.value?.showModal()
+  void loadDyes()
+}
+
+function applyDye(id: number) {
+  dyeDialog.value?.close()
+  const index = dyeChannel.value - 1
+  if ((selectedGear.value?.stains[index]?.id ?? 0) === id) return
+  const slot = selectedSlot.value
+  const current = selectedChange.value
+  const change: WardrobeChange = { ...current, slot }
+  const original = props.character?.gear.find(gear => gear.slot === slot)
+  const base = change.itemId === undefined ? original?.stains[index]?.id ?? 0 : 0
+  change[index === 0 ? 'stain1' : 'stain2'] = id === base ? undefined : id
+  if (change.itemId === undefined && change.stain1 === undefined && change.stain2 === undefined) {
+    schedulePreview(pending.value.filter(entry => entry.slot !== slot))
+  } else {
+    schedulePreview(current ? pending.value.map(entry => entry.slot === slot ? change : entry) : [...pending.value, change])
+  }
 }
 
 function toggleHead() {
@@ -278,9 +328,20 @@ onBeforeUnmount(() => {
               @click="changeSlot(0)">卸下</button>
             <button type="button" class="secondary" aria-label="还原原装备" :disabled="!selectedChange" @click="changeSlot(undefined)">还原</button>
           </div>
-          <p v-if="selectedOwner" class="wardrobe-status wardrobe-coverage" role="status">
-            {{ slotLabels.get(selectedOwner) }}装备占用此部位。选择新物品可替换该装备。
-          </p>
+          <div v-if="selectedOwner || (selectedGear?.loaded && selectedGear.model)" class="wardrobe-current">
+            <p v-if="selectedOwner" class="wardrobe-status wardrobe-coverage" role="status">
+              {{ slotLabels.get(selectedOwner) }}装备占用此部位。选择新物品可替换该装备。
+            </p>
+            <div v-else-if="dyeChannels" class="wardrobe-dye-controls" role="group" aria-label="装备染色">
+              <button v-for="channel in dyeChannels" :key="channel" type="button" class="secondary wardrobe-dye-button"
+                aria-haspopup="dialog" :disabled="previewBusy" @click="openDyes(channel)">
+                <span class="wardrobe-dye-swatch" :style="{ backgroundColor: selectedGear?.stains[channel - 1]?.color ?? undefined }"></span>
+                <strong>{{ dyeChannels === 1 ? '染色' : `染色 ${channel}` }}</strong>
+                <span>{{ selectedGear?.stains[channel - 1]?.name ?? '无染色' }}</span>
+              </button>
+            </div>
+            <p v-else class="wardrobe-status">此装备不可染色</p>
+          </div>
           <div class="wardrobe-results" :aria-busy="searchBusy">
             <ul v-if="items.length" class="wardrobe-items">
               <li v-for="item in items" :key="item.id">
@@ -309,11 +370,32 @@ onBeforeUnmount(() => {
         </section>
       </div>
     </div>
+    <dialog ref="dyeDialog" class="wardrobe-dye-dialog" aria-labelledby="wardrobe-dye-title">
+      <header>
+        <h2 id="wardrobe-dye-title">{{ selectedLabel }} · {{ dyeChannels === 1 ? '选择染剂' : `染色 ${dyeChannel}` }}</h2>
+        <button type="button" class="secondary" aria-label="关闭染剂" @click="dyeDialog?.close()"><UiIcon name="close" /></button>
+      </header>
+      <input v-model="dyeQuery" type="search" maxlength="50" aria-label="搜索染剂" placeholder="搜索染剂名称">
+      <p v-if="dyeBusy" class="wardrobe-status" role="status">正在读取染剂…</p>
+      <div v-else-if="dyeError" class="wardrobe-retry">
+        <p class="wardrobe-status" role="status">无法读取染剂</p>
+        <button type="button" class="secondary" @click="loadDyes">重试</button>
+      </div>
+      <ul v-else-if="dyeOptions.length" class="wardrobe-dye-options">
+        <li v-for="dye in dyeOptions" :key="dye.id">
+          <button type="button" :aria-pressed="(selectedGear?.stains[dyeChannel - 1]?.id ?? 0) === dye.id" @click="applyDye(dye.id)">
+            <span class="wardrobe-dye-swatch" :style="{ backgroundColor: dye.color ?? undefined }"></span>
+            {{ dye.name }}
+          </button>
+        </li>
+      </ul>
+      <p v-else class="wardrobe-status" role="status">没有找到匹配的染剂</p>
+    </dialog>
   </main>
 </template>
 
 <style scoped>
-.wardrobe-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 18px; }
+.wardrobe-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
 .wardrobe-stage { position: sticky; top: 14px; overflow: hidden; }
 .wardrobe-figure {
   position: relative; height: clamp(390px, 65dvh, 660px);
@@ -349,7 +431,8 @@ onBeforeUnmount(() => {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 9px;
   padding: 9px 12px; border-top: 1px solid var(--line); font-size: .85rem;
 }
-.wardrobe-selection { display: grid; gap: 14px; min-width: 0; }
+/* The preview sets the height of both columns. The catalog scrolls within the remaining space. */
+.wardrobe-selection { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 14px; min-width: 0; contain: size; }
 .wardrobe-slots, .wardrobe-catalog { padding: 15px; }
 .wardrobe-slot-group + .wardrobe-slot-group { margin-top: 13px; }
 .wardrobe-slot-group h2, .wardrobe-catalog h2 { color: var(--navy); font-size: .98rem; }
@@ -361,8 +444,8 @@ onBeforeUnmount(() => {
 .wardrobe-slot-grid button[aria-pressed='true'] { border-color: var(--blue-border); background: var(--blue-light); color: var(--blue-hover); }
 .wardrobe-slot-grid strong { display: block; font-size: .82rem; }
 .wardrobe-slot-grid small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: .73rem; }
-.wardrobe-catalog { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; min-height: 200px; }
-.wardrobe-catalog:has(.wardrobe-coverage) { grid-template-rows: auto auto auto minmax(0, 1fr); }
+.wardrobe-catalog { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; min-height: 0; }
+.wardrobe-catalog:has(.wardrobe-current) { grid-template-rows: auto auto auto minmax(0, 1fr); }
 .wardrobe-catalog-header, .wardrobe-catalog-actions { display: flex; align-items: center; gap: 6px; }
 .wardrobe-catalog-header { justify-content: space-between; }
 .wardrobe-catalog-actions input {
@@ -372,7 +455,34 @@ onBeforeUnmount(() => {
 .wardrobe-catalog-actions button { flex: none; padding-inline: 10px; }
 .wardrobe-close { display: none; }
 .wardrobe-coverage { color: var(--amber); }
-.wardrobe-results { min-height: 0; max-height: 52dvh; overflow: auto; overscroll-behavior: contain; }
+.wardrobe-dye-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.wardrobe-dye-button { display: flex; min-width: 0; align-items: center; gap: 7px; min-height: 38px; }
+.wardrobe-dye-button > span:last-child { color: var(--muted); font-weight: 400; }
+.wardrobe-dye-swatch {
+  display: block; width: 18px; height: 18px; flex: none; border-radius: 5px;
+  background-color: var(--paper); border: 1px solid #303a4c40;
+}
+.wardrobe-dye-dialog {
+  width: min(490px, calc(100% - 26px)); max-height: min(680px, 82dvh); overflow-y: auto; overscroll-behavior: contain;
+  padding: 16px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: var(--panel-radius);
+}
+.wardrobe-dye-dialog::backdrop { background: var(--scrim); }
+.wardrobe-dye-dialog header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.wardrobe-dye-dialog h2 { color: var(--navy); font-size: 1.05rem; }
+.wardrobe-dye-dialog header button { display: grid; place-items: center; min-width: 40px; padding: 0; }
+.wardrobe-dye-dialog input {
+  width: 100%; min-height: 40px; margin: 8px 0 10px; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface); font-size: .88rem;
+}
+.wardrobe-dye-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 5px; margin: 0; padding: 0; list-style: none; }
+.wardrobe-dye-options button {
+  display: flex; width: 100%; min-height: 42px; align-items: center; gap: 7px; text-align: left; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface); font-size: .82rem;
+}
+.wardrobe-dye-options button:hover, .wardrobe-dye-options button[aria-pressed='true'] {
+  border-color: var(--blue-border); background: var(--blue-light); color: var(--blue-hover);
+}
+.wardrobe-results { min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .wardrobe-items { display: grid; gap: 4px; padding: 0; margin: 0; list-style: none; }
 .wardrobe-item {
   display: flex; align-items: center; gap: 9px; width: 100%; min-height: 52px; padding: 6px 8px;
@@ -402,6 +512,7 @@ onBeforeUnmount(() => {
 @container app-content (max-width: 720px) {
   .wardrobe-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .wardrobe-layout:has(.wardrobe-catalog.is-open) { padding-bottom: 43dvh; }
+  .wardrobe-selection { grid-template-rows: auto; contain: none; }
   .wardrobe-stage { position: static; scroll-margin-top: calc(58px + env(safe-area-inset-top)); }
   .wardrobe-figure { height: clamp(228px, 41dvh, 420px); }
   .wardrobe-character { top: 12px; left: 12px; }
@@ -411,7 +522,7 @@ onBeforeUnmount(() => {
   .wardrobe-catalog { display: none; }
   .wardrobe-catalog.is-open {
     position: fixed; z-index: 6; inset: auto 0 0; display: grid; width: min(100%, 640px); max-height: 43dvh;
-    min-height: 0; margin-inline: auto; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    margin-inline: auto; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
     border-radius: var(--panel-radius) var(--panel-radius) 0 0; box-shadow: 0 -8px 35px #242d392b;
   }
   .wardrobe-close { display: grid; place-items: center; min-width: 44px; padding: 0; }

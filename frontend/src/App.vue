@@ -11,7 +11,7 @@ import UiIcon from './UiIcon.vue'
 import WardrobePage from './WardrobePage.vue'
 import WeatherPage from './WeatherPage.vue'
 import type { Character } from './character'
-import { communityJobProgress, lobbyJobName } from './jobs'
+import { communityJobProgress, lobbyJobName, type JobSyncNotice } from './jobs'
 import {
   beginGameLogin, cancelGameOperation, chooseGameCharacter, getCommunityStatus, getCurrentGame, getExdProgress, getExdWeather,
   getSavedGameArea, refreshExd, refreshLobby, selectCommunityCharacter, selectServiceAccount, signOutGame,
@@ -28,6 +28,7 @@ const lobbyBusy = ref(false)
 const signingOut = ref(false)
 const restoring = ref(true)
 const showLogin = ref(false)
+const communityLoginDialog = ref<HTMLDialogElement>()
 const preparingPortrait = ref<string>()
 const currentAvatar = ref<{ root: string; source: string }>()
 const exd = shallowRef<ExdWeatherView>()
@@ -42,23 +43,45 @@ let poll: ReturnType<typeof setTimeout> | undefined
 let exdPoll: ReturnType<typeof setTimeout> | undefined
 let generation = 0
 let communityRetry: { id: string; attempts: number; after: number } | undefined
-let syncingCommunity = false
+const syncingCommunity = ref(false)
 
 const gameCharacter = computed(() => game.value?.current)
+const needsCommunityLogin = computed(() => community.value?.state === 'expired')
 const navigationCharacterName = computed(() => gameCharacter.value?.name ?? (game.value ? '未选择角色' : '未登录'))
 const characterPrompt = computed(() => restoring.value ? '正在恢复已保存的登录…'
   : signingOut.value ? '正在退出登录…'
     : game.value ? '请在设置中选择角色。' : '请在设置中登录后查看角色信息。')
 const cachedProfile = computed(() => gameCharacter.value ? toProfile(gameCharacter.value) : undefined)
-const communityJobs = computed(() => {
+const communityJobProfile = computed(() => {
   const character = cachedProfile.value
   const jobs = community.value?.jobProfile
   if (character && jobs?.character === character.name && jobs.area === character.dc && jobs.world === character.world)
-    return communityJobProgress(jobs.levels, character.jobId)
+    return jobs
 })
+const communityJobs = computed(() => communityJobProfile.value
+  ? communityJobProgress(communityJobProfile.value.levels, gameCharacter.value?.classJobId ?? null)
+  : undefined)
 const profile = computed(() => {
   const cached = cachedProfile.value
   return cached && communityJobs.value ? { ...cached, jobProgress: communityJobs.value } : cached
+})
+const jobSyncNotice = computed<JobSyncNotice | undefined>(() => {
+  if (communityJobProfile.value) {
+    const levels = communityJobs.value?.levels
+    if (levels && Object.values(levels).some(level => level != null && level > 0)) return
+    return { message: '已同步石之家，当前没有可显示的职业等级。' }
+  }
+  const session = community.value
+  if (needsCommunityLogin.value)
+    return { message: '石之家登录已失效，重新登录后可同步职业等级。', action: 'login' }
+  if (syncingCommunity.value || session?.state === 'starting' || session?.jobsStatus === 'loading')
+    return { message: '正在从石之家读取职业等级…' }
+  if (session?.state === 'confirmation' || session?.state === 'identity')
+    return { message: '石之家登录尚未验证，请重新登录以同步职业等级。', action: 'login' }
+  return {
+    message: '暂未从石之家读取到此角色的职业等级。',
+    action: session?.state === 'connected' || session?.state === 'unbound' ? 'retry' : 'login',
+  }
 })
 const list = computed(() => game.value?.characters.map(toProfile) ?? [])
 const profileKey = computed(() => {
@@ -198,7 +221,9 @@ function authorized(result: GameResponse) {
   clearTimeout(poll)
   const current = ++generation
   communityRetry = undefined
+  syncingCommunity.value = false
   community.value = undefined
+  communityLoginDialog.value?.close()
   void pollCommunity(current)
 }
 
@@ -231,7 +256,10 @@ async function pollCommunity(token: number) {
     const snapshot = await getCommunityStatus()
     if (token !== generation) return
     if (snapshot) {
+      const previouslyExpired = needsCommunityLogin.value
       community.value = snapshot
+      if (needsCommunityLogin.value && !previouslyExpired && !showLogin.value)
+        communityLoginDialog.value?.showModal()
       void syncCommunity()
     }
   } catch {
@@ -240,17 +268,33 @@ async function pollCommunity(token: number) {
   if (token === generation && game.value) poll = setTimeout(() => pollCommunity(token), 1000)
 }
 
+function startCommunityLogin() {
+  communityLoginDialog.value?.close()
+  status.value = ''
+  go('settings')
+  showLogin.value = true
+}
+
+function handleJobSync(action: NonNullable<JobSyncNotice['action']>) {
+  if (action === 'login') {
+    startCommunityLogin()
+    return
+  }
+  communityRetry = undefined
+  void syncCommunity()
+}
+
 async function syncCommunity() {
   const id = gameCharacter.value?.id
   const session = community.value
-  if (!id || syncingCommunity || communityJobs.value || session?.jobsStatus === 'loading'
+  if (!id || syncingCommunity.value || communityJobProfile.value || session?.jobsStatus === 'loading'
     || (session?.state !== 'connected' && session?.state !== 'unbound')) return
   if (communityRetry?.id !== id) communityRetry = { id, attempts: 0, after: 0 }
   const retry = communityRetry
   if (retry.attempts >= 4 || performance.now() < retry.after) return
   const token = generation
   retry.attempts++
-  syncingCommunity = true
+  syncingCommunity.value = true
   try {
     await selectCommunityCharacter(id)
   } catch {
@@ -258,7 +302,7 @@ async function syncCommunity() {
   } finally {
     if (token === generation) {
       retry.after = performance.now() + 1000 * 2 ** (retry.attempts - 1)
-      syncingCommunity = false
+      syncingCommunity.value = false
     }
   }
 }
@@ -314,10 +358,11 @@ async function logout() {
   signingOut.value = true
   generation++
   clearTimeout(poll)
-  syncingCommunity = false
+  syncingCommunity.value = false
   status.value = ''
   game.value = undefined
   community.value = undefined
+  communityLoginDialog.value?.close()
   try {
     if (!await signOutGame()) status.value = '无法清除本机保存的登录状态'
   } catch {
@@ -438,6 +483,7 @@ onBeforeUnmount(() => {
         <PageHeading title="角色信息" />
         <div v-if="profile" class="profile-layout">
           <CharacterDetails :key="profileKey" :character="profile" :active="screen === 'profile'"
+            :job-sync-notice="jobSyncNotice" @job-sync="handleJobSync"
             @portrait-start="startPortrait" @portrait-ready="showPortrait" @portrait-finish="finishPortrait" />
         </div>
         <CharacterSettingsPrompt v-else :message="characterPrompt" :can-open-settings="!restoring && !signingOut"
@@ -456,15 +502,22 @@ onBeforeUnmount(() => {
                   <h3 id="sdo-provider">盛趣账号</h3>
                   <p v-if="!showLogin" role="status">{{ game ? '已登录' : restoring || signingOut ? characterPrompt : '登录后即可查看和切换角色。' }}</p>
                 </div>
-                <button v-if="game" class="secondary" type="button" :disabled="lobbyBusy || choosing" @click="logout">退出登录</button>
+                <button v-if="game && !showLogin" class="secondary" type="button" :disabled="lobbyBusy || choosing" @click="logout">退出登录</button>
                 <button v-else-if="!showLogin" class="primary" type="button" :disabled="restoring || signingOut" @click="showLogin = true">登录</button>
               </div>
-              <GameLogin v-if="showLogin" class="settings-row" :logout-error="status" @authorized="signedIn">
+              <GameLogin v-if="showLogin" class="settings-row" :logout-error="status" :renewing="Boolean(game)" @authorized="signedIn">
                 <template #actions>
                   <button class="secondary" type="button" @click="showLogin = false">关闭登录</button>
                 </template>
               </GameLogin>
               <p v-else-if="!game && status" class="settings-row account-status" role="status">{{ status }}</p>
+            </section>
+            <section v-if="needsCommunityLogin && !showLogin" class="settings-row account-provider-row" aria-labelledby="community-provider">
+              <div class="account-provider-copy">
+                <h3 id="community-provider">石之家</h3>
+                <p>登录已失效</p>
+              </div>
+              <button class="secondary" type="button" :disabled="lobbyBusy || choosing" @click="startCommunityLogin">重新登录</button>
             </section>
             <section class="settings-row" aria-labelledby="fflogs-provider" hidden>
               <div class="account-provider-row">
@@ -503,6 +556,15 @@ onBeforeUnmount(() => {
       </main>
     </div>
   </div>
+  <dialog ref="communityLoginDialog" class="community-login-dialog" role="alertdialog"
+    aria-labelledby="community-login-title" aria-describedby="community-login-description">
+    <h2 id="community-login-title">石之家登录已失效</h2>
+    <p id="community-login-description">可能是因为你在其他设备登录了石之家。是否重新登录以继续同步职业等级？</p>
+    <form method="dialog">
+      <button class="secondary" type="submit" autofocus>稍后</button>
+      <button class="primary" type="button" :disabled="lobbyBusy || choosing || signingOut" @click="startCommunityLogin">重新登录</button>
+    </form>
+  </dialog>
 </template>
 
 <style scoped>
@@ -524,4 +586,12 @@ onBeforeUnmount(() => {
 .account-provider-row button { margin-left: auto; }
 .account-provider-copy p { margin-top: 4px; }
 .account-status { color: var(--muted); font-size: .875rem; }
+.community-login-dialog {
+  width: min(420px, calc(100% - 26px)); padding: 20px; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line); border-radius: var(--panel-radius); box-shadow: var(--panel-shadow);
+}
+.community-login-dialog::backdrop { background: var(--scrim); }
+.community-login-dialog h2 { color: var(--navy); font-size: 1.12rem; }
+.community-login-dialog p { margin-block: 8px 18px; color: var(--muted); line-height: 1.55; }
+.community-login-dialog form { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

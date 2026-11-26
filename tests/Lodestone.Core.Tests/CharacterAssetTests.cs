@@ -9,6 +9,67 @@ namespace Lodestone.Core.Tests;
 public sealed class CharacterAssetTests
 {
     [Fact]
+    public void MaterialDyesReplaceFlaggedValuesWithTheGameTemplate()
+    {
+        var shader = "character.shpk\0"u8;
+        var dyeOffset = 16 + shader.Length + 2048;
+        var data = new byte[dyeOffset + 128];
+        BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(6), 2176);
+        BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(8), (ushort)shader.Length);
+        shader.CopyTo(data.AsSpan(16));
+        const uint template = 1100u << 16;
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(dyeOffset), template | 1 | 16 | 32);
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(dyeOffset + 4), template | (1u << 27) | 2);
+        WriteHalf(data.AsSpan(16 + shader.Length), 0.25f);
+        WriteHalf(data.AsSpan(16 + shader.Length + 2), 0.5f);
+
+        var diffuse = new byte[12 + 254];
+        WriteHalf(diffuse.AsSpan(0), 0.75f);
+        WriteHalf(diffuse.AsSpan(2), 0.875f);
+        WriteHalf(diffuse.AsSpan(4), 1f);
+        WriteHalf(diffuse.AsSpan(6), 0.25f);
+        diffuse[12] = 255;
+        diffuse[13] = 1;
+        diffuse[14] = 2;
+        var specular = new byte[254 * 6];
+        WriteHalf(specular.AsSpan(6), 0.125f);
+        WriteHalf(specular.AsSpan(8), 0.625f);
+        var metalness = new byte[2];
+        WriteHalf(metalness, 0.25f);
+        var roughness = new byte[2];
+        WriteHalf(roughness, 0.625f);
+        byte[][] columns = [diffuse, specular, [], [], metalness, roughness, [], [], [], [], [], []];
+        var templateData = new byte[16 + columns.Length * 2 + columns.Sum(column => column.Length)];
+        "MS"u8.CopyTo(templateData);
+        BinaryPrimitives.WriteUInt16LittleEndian(templateData.AsSpan(2), 0x0201);
+        BinaryPrimitives.WriteUInt16LittleEndian(templateData.AsSpan(4), 1);
+        templateData[6] = 3;
+        templateData[7] = 9;
+        BinaryPrimitives.WriteUInt32LittleEndian(templateData.AsSpan(8), 1100);
+        var payload = 16 + columns.Length * 2;
+        var written = 0;
+        for (var index = 0; index < columns.Length; index++)
+        {
+            columns[index].CopyTo(templateData, payload + written);
+            written += columns[index].Length;
+            BinaryPrimitives.WriteUInt16LittleEndian(templateData.AsSpan(16 + index * 2), (ushort)(written / 2));
+        }
+
+        var material = CharacterMaterial.Read(data);
+        material.ApplyDyes(new StainingTemplate(templateData), 1, 2);
+
+        Assert.Equal([0.75f, 0.875f, 1f], material.Palette[0][..3]);
+        Assert.Equal(0.625f, material.Palette[0][3]);
+        Assert.Equal(0.25f, material.Palette[0][7]);
+        Assert.Equal(0, material.Palette[1][0]);
+        Assert.Equal([0.125f, 0.625f, 0f], material.Palette[1][4..7]);
+        Assert.Equal(0, material.Palette[2][0]);
+
+        static void WriteHalf(Span<byte> destination, float value) =>
+            BinaryPrimitives.WriteUInt16LittleEndian(destination, BitConverter.HalfToUInt16Bits((Half)value));
+    }
+
+    [Fact]
     public void TexturePreservesBgraAndUsesRgbaInTheVirtualPng()
     {
         var data = new byte[88];

@@ -5,7 +5,7 @@ import {
   type GameArea, type GameProgress, type GameResponse,
 } from './bridge'
 
-const props = defineProps<{ logoutError: string }>()
+const props = defineProps<{ logoutError: string; renewing?: boolean }>()
 const emit = defineEmits<{ authorized: [result: GameResponse] }>()
 const mode = ref<'phone' | 'scan'>('phone')
 const account = ref('')
@@ -112,7 +112,10 @@ onMounted(async () => {
   const saved = await getSavedGameArea().catch(() => null)
   if (!mounted) return
   savedArea.value = saved
-  if (saved !== null) area.value = saved
+  if (saved !== null) {
+    area.value = saved
+    if (props.renewing) remember.value = true
+  }
   checkingSaved.value = false
   await loadAreas(Boolean(props.logoutError))
 })
@@ -134,7 +137,7 @@ onBeforeUnmount(() => {
         </select>
       </div>
       <button v-if="!areas.length && !checkingSaved && !loadingAreas" class="secondary" type="button" @click="loadAreas()">重新读取大区</button>
-      <div v-if="savedArea !== null" class="game-actions">
+      <div v-if="savedArea !== null && !renewing" class="game-actions">
         <button class="secondary" type="button" :disabled="Boolean(active)" @click="login('saved')">使用已保存登录</button>
         <button class="secondary" type="button" :disabled="Boolean(active)" @click="forget">清除已保存登录</button>
       </div>

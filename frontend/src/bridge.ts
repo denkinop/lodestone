@@ -82,7 +82,14 @@ export interface GameGear {
   variant: number
   loaded: boolean
   candidates: { id: number; name: string; icon: number; details?: GameItemDetails }[]
-  stains: ({ name: string; color: string | null } | null)[]
+  stains: (EquipmentStain | null)[]
+  dyeChannels?: number
+}
+
+export interface EquipmentStain {
+  id: number
+  name: string
+  color: string | null
 }
 
 export interface GameItemDetails {
@@ -180,19 +187,24 @@ export interface WardrobeItem {
 
 export interface WardrobeChange {
   slot: string
-  itemId: number
+  itemId?: number
   name?: string
+  stain1?: number
+  stain2?: number
 }
 
 // HybridWebView also sends these arguments in an HTTP header.
 export const searchWardrobe = (slot: string, query: string, page: number) =>
   invokeClient<{ items: WardrobeItem[]; more: boolean }>('SearchWardrobe', [slot, encodeURIComponent(query), page])
 
+export const getWardrobeDyes = () => invokeClient<EquipmentStain[]>('GetWardrobeDyes')
+
 export async function prepareWardrobePreview(characterId: string, requestId: string, changes: readonly WardrobeChange[]) {
   const response = await invokeClient<{
     scene: string | null; textureRoot: string | null; coveredSlots: Record<string, string> | null
     appliedSlots: string[] | null; error: string | null
-  }>('PrepareWardrobePreview', [characterId, requestId, JSON.stringify(changes.map(({ slot, itemId }) => ({ slot, itemId })))])
+  }>('PrepareWardrobePreview', [characterId, requestId,
+    JSON.stringify(changes.map(({ slot, itemId, stain1, stain2 }) => ({ slot, itemId, stain1, stain2 })))])
   if (!response.scene || !response.textureRoot)
     throw new Error(response.error || '无法加载试穿预览')
   return { scene: response.scene, textureRoot: response.textureRoot,

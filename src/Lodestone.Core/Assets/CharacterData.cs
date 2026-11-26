@@ -51,9 +51,13 @@ public sealed class CharacterData
 
     internal CharacterData(JsonElement data, CharacterData? fallback = null)
     {
-        Wardrobe = new WardrobeCatalog();
-        if (data.TryGetProperty("wardrobeSlotCoverage", out var coverage) && coverage.ValueKind == JsonValueKind.True)
-            fallback = null;
+        foreach (var value in data.GetProperty("stains").EnumerateArray())
+        {
+            var id = value[0].GetInt32();
+            stains.Add(id, new EquipmentStain(id, ReadName(value[1]), value[2].GetString()));
+        }
+        Wardrobe = new WardrobeCatalog(stains.Values);
+        var hasSlotCoverage = data.TryGetProperty("wardrobeSlotCoverage", out var coverage) && coverage.ValueKind == JsonValueKind.True;
         foreach (var value in data.GetProperty("items").EnumerateArray())
         {
             var candidate = new EquipmentCandidate(value[0].GetInt32(), ReadName(value[1]), value[2].GetInt32())
@@ -70,17 +74,14 @@ public sealed class CharacterData
                 if (key.Item1 >= WardrobeCatalog.FirstSlot)
                 {
                     var covered = value.GetArrayLength() > 5 ? value[5].GetInt32()
-                        : fallback?.Wardrobe.CoveredMask(key.Item1, candidate.Id, key.Item2) ?? 0;
-                    Wardrobe.Add(key.Item1, key.Item2, candidate, covered);
+                        : hasSlotCoverage ? 0 : fallback?.Wardrobe.CoveredMask(key.Item1, candidate.Id, key.Item2) ?? 0;
+                    var dyeChannels = value.GetArrayLength() > 6 ? value[6].GetInt32()
+                        : fallback?.Wardrobe.DyeChannels(key.Item1, candidate.Id, key.Item2) ?? 0;
+                    Wardrobe.Add(key.Item1, key.Item2, candidate, covered, dyeChannels);
                 }
             }
         }
         Wardrobe.Sort();
-        foreach (var value in data.GetProperty("stains").EnumerateArray())
-        {
-            var id = value[0].GetInt32();
-            stains.Add(id, new EquipmentStain(id, ReadName(value[1]), value[2].GetString()));
-        }
         foreach (var value in data.GetProperty("worlds").EnumerateArray())
             worlds[value[0].GetUInt16()] = ReadName(value[1]);
         foreach (var value in data.GetProperty("guardianDeities").EnumerateArray())

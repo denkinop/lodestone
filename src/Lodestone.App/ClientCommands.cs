@@ -19,8 +19,7 @@ internal sealed partial class ClientCommands : IDisposable
     private readonly GamePreview preview;
     private readonly GamePreview wardrobe;
     private readonly CommunityBrowser browser = new();
-    private RisingStonesSession? community;
-    private CommunityAccess? communityOwner;
+    private CommunityConnection? community;
     private readonly object gate = new();
     private VersionOperation? active;
     private readonly CancellationTokenSource lifetime = new();
@@ -113,14 +112,16 @@ internal sealed partial class ClientCommands : IDisposable
     public Task<bool> SignOutGame() => game.SignOutAsync();
     public CommunityStatus? GetCommunityStatus()
     {
-        var snapshot = Volatile.Read(ref community)?.Snapshot;
+        var connection = Volatile.Read(ref community);
+        var snapshot = connection is not null && ReferenceEquals(connection.Owner, game.CurrentCommunity)
+            ? connection.Session.Snapshot : null;
         return snapshot is null ? null : new CommunityStatus(snapshot.State, snapshot.JobsStatus, snapshot.JobProfile is { } profile
                 ? new CommunityJobStatus(profile.Character, profile.Area, profile.World, profile.Levels) : null);
     }
 
     public Task<string?> SelectCommunityCharacter(string contentId) => MainThread.InvokeOnMainThreadAsync(async () =>
     {
-        if (game.FindCommunityCharacter(contentId) is not { } selection || !ReferenceEquals(selection.Owner, communityOwner))
+        if (game.FindCommunityCharacter(contentId) is not { } selection || !ReferenceEquals(selection.Owner, community?.Owner))
             return "无法核对所选游戏角色，请重新读取角色列表。";
         return await browser.SelectRoleAsync(selection.Character, () => game.FindCommunityCharacter(contentId) == selection);
     });
@@ -135,11 +136,11 @@ internal sealed partial class ClientCommands : IDisposable
     private void UpdateCommunitySession()
     {
         var owner = game.CurrentCommunity;
-        if (ReferenceEquals(owner, communityOwner))
+        if (ReferenceEquals(owner, community?.Owner))
             return;
-        communityOwner = owner;
-        var session = owner is null ? null : new RisingStonesSession(owner.AccountId, reusesSession: true);
-        Volatile.Write(ref community, session);
+        var session = owner is null ? null : new RisingStonesSession(owner.AccountId, reusesSession: true,
+            restoresSavedSession: owner.Ticket is null && owner.SavedCookies.Count > 0);
+        Volatile.Write(ref community, owner is not null && session is not null ? new CommunityConnection(owner, session) : null);
         browser.SetSession(session, owner?.FederatedCookies ?? [],
             owner is { Remember: true } ? cookies => game.SaveCommunityAsync(owner, cookies) : null);
         if (owner is null || session is null)
@@ -181,6 +182,7 @@ internal sealed partial class ClientCommands : IDisposable
     public bool SaveGamePortrait(string requestId, string mode, string png) => preview.SavePortrait(requestId, mode, png);
     public Task<WardrobePage> SearchWardrobe(string slot, string encodedQuery, int page) => Task.Run(() =>
         Exd.Current.Character.Wardrobe.Search(slot, Uri.UnescapeDataString(encodedQuery), page));
+    public IReadOnlyList<EquipmentStain> GetWardrobeDyes() => Exd.Current.Character.Wardrobe.Dyes;
 
     public Task<GamePreviewResult> PrepareWardrobePreview(string characterId, string requestId, string changes)
     {
@@ -301,6 +303,8 @@ internal sealed partial class ClientCommands : IDisposable
         officialHome.Dispose();
         cdn.Dispose();
     }
+
+    private sealed record CommunityConnection(CommunityAccess Owner, RisingStonesSession Session);
 
     private sealed class VersionOperation(Guid id)
     {

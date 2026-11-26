@@ -13,7 +13,7 @@ public sealed record CommunitySnapshot(string State, string Detail, IReadOnlyLis
     public string JobsStatus { get; init; } = "idle";
 }
 
-public sealed class RisingStonesSession(string accountId, bool reusesSession = false)
+public sealed class RisingStonesSession(string accountId, bool reusesSession = false, bool restoresSavedSession = false)
 {
     public const string ServiceUrl = "https://apiff14risingstones.web.sdo.com/api/home/GHome/login";
     public const string StatusUrl = "https://apiff14risingstones.web.sdo.com/api/home/GHome/isLogin";
@@ -23,11 +23,13 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     public const string CharactersUrl = "https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/getFF14Characters";
     public const string SelectRoleUrl = "https://apiff14risingstones.web.sdo.com/api/home/groupAndRole/bindCharacterInfo";
     public const int MaxProfileBytes = 512 * 1024;
+    private const int LoginRequiredCode = 10403;
     private readonly object gate = new();
     private CommunitySnapshot snapshot = reusesSession
         ? new("starting", "正在通过盛趣会话验证石之家", [])
         : new("confirmation", "石之家需要单独确认，可继续查看游戏角色", []);
     private bool verified;
+    private bool knownLogin = restoresSavedSession;
     private CommunityBinding[]? bindingSummary;
     private CommunityBinding? currentRole;
     private CommunityCharacter? selectedRole;
@@ -85,7 +87,11 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     {
         lock (gate)
         {
-            if (!verified || !TryReadResponse(body, out _, out var code) || !IsSuccess(code))
+            if (!verified || !TryReadResponse(body, out _, out var code, readData: false))
+                return false;
+            if (code == LoginRequiredCode)
+                RequireLogin();
+            if (!IsSuccess(code))
                 return false;
             selectedRole = role;
             currentRole = null;
@@ -148,13 +154,14 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     {
         lock (gate)
         {
+            if (snapshot.State == "expired")
+                return;
             if (!TryReadResponse(body, out var data, out var code))
             {
                 Unverified(verified ? "failed" : "confirmation", "石之家尚未返回可验证的登录状态");
                 return;
             }
-            var state = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("isLogin", out var login)
-                ? login.ValueKind : data.ValueKind;
+            var state = LoginState(data);
             var requiresRole = IsRoleRequired(code);
             var signedIn = code switch
             {
@@ -164,7 +171,10 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
             };
             if (!signedIn)
             {
-                Unverified(verified ? "expired" : "confirmation", verified ? "石之家会话已过期" : "请在石之家官方窗口登录");
+                if (IsSignedOut(code, state))
+                    RequireLogin();
+                else
+                    Unverified(verified ? "failed" : "confirmation", "石之家尚未返回可验证的登录状态");
                 return;
             }
             if (!MatchesAccount(data, ticketOnlyProfile))
@@ -175,8 +185,18 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
             if (!verified)
                 snapshot = new("connected", "石之家会话已验证，正在检查社区角色", []);
             verified = true;
+            knownLogin = true;
             if (requiresRole && selectedRole is null)
                 RequireCommunityRole();
+        }
+    }
+
+    public void ObserveLoginCheck(byte[] body)
+    {
+        lock (gate)
+        {
+            if (verified && TryReadResponse(body, out var data, out var code) && IsSignedOut(code, LoginState(data)))
+                RequireLogin();
         }
     }
 
@@ -184,7 +204,14 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     {
         lock (gate)
         {
-            if (!verified || selectedRole is not null || !TryReadResponse(body, out var data, out var code))
+            if (!verified || !TryReadResponse(body, out var data, out var code))
+                return;
+            if (code == LoginRequiredCode)
+            {
+                RequireLogin();
+                return;
+            }
+            if (selectedRole is not null)
                 return;
             if (IsRoleRequired(code))
             {
@@ -238,9 +265,9 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
                 RequireCommunityRole();
                 return;
             }
-            if (code == 10403)
+            if (code == LoginRequiredCode)
             {
-                Unverified("expired", "石之家会话已过期");
+                RequireLogin();
                 return;
             }
             var character = Text(data, "character_name");
@@ -287,6 +314,16 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
             if (snapshot.JobsStatus == "loading")
                 snapshot = snapshot with { JobProfile = null, JobsStatus = "unavailable" };
         }
+    }
+
+    public bool ObserveAuthenticationFailure(int status, byte[]? body)
+    {
+        if (status != 401 && (status is not (200 or 403) || body is null
+            || !TryReadResponse(body, out _, out var code, MaxProfileBytes, readData: false) || code != LoginRequiredCode))
+            return false;
+        lock (gate)
+            RequireLogin();
+        return true;
     }
 
     private static Dictionary<string, int> ReadCareerLevels(JsonElement data)
@@ -350,7 +387,7 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
     public void Closed()
     {
         lock (gate)
-            Unverified(verified ? "expired" : "confirmation", verified ? "石之家登录窗口已关闭" : "石之家仍需确认");
+            Unverified("confirmation", verified ? "石之家登录窗口已关闭" : "石之家仍需确认");
     }
 
     public void Failed()
@@ -359,8 +396,13 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
             Unverified("failed", "无法打开石之家官方确认窗口");
     }
 
+    private void RequireLogin() => Unverified(knownLogin ? "expired" : "confirmation",
+        knownLogin ? "石之家登录已失效" : "请登录石之家");
+
     private void Unverified(string state, string detail)
     {
+        if (snapshot.State == "expired")
+            return;
         verified = false;
         bindingSummary = null;
         currentRole = null;
@@ -378,6 +420,13 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
 
     private static bool IsRoleRequired(int? code) => code is 10103 or 10104;
 
+    private static JsonValueKind LoginState(JsonElement data) =>
+        data.ValueKind == JsonValueKind.Object && data.TryGetProperty("isLogin", out var login)
+            ? login.ValueKind : data.ValueKind;
+
+    private static bool IsSignedOut(int? code, JsonValueKind state) => code == LoginRequiredCode
+        || state == JsonValueKind.False && (code is null || IsSuccess(code) || IsRoleRequired(code));
+
     private static string? Text(JsonElement data, string name)
     {
         if (data.ValueKind != JsonValueKind.Object || !data.TryGetProperty(name, out var value))
@@ -391,7 +440,7 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
         return text is { Length: > 0 and <= 128 } && !text.Any(char.IsControl) ? text : null;
     }
 
-    private static bool TryReadResponse(byte[] body, out JsonElement data, out int? code, int maxBytes = 64 * 1024)
+    private static bool TryReadResponse(byte[] body, out JsonElement data, out int? code, int maxBytes = 64 * 1024, bool readData = true)
     {
         data = default;
         code = null;
@@ -409,7 +458,7 @@ public sealed class RisingStonesSession(string accountId, bool reusesSession = f
                     return false;
                 code = actual;
             }
-            if (root.TryGetProperty("data", out var value))
+            if (readData && root.TryGetProperty("data", out var value))
                 data = value.Clone();
             return true;
         }
