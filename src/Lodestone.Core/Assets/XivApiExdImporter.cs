@@ -28,7 +28,7 @@ internal sealed class XivApiExdImporter(HttpClient http)
         ("GuardianDeity", "Name"),
         ("Item", "Name,Icon@as(raw),ModelMain,ModelSub,EquipSlotCategory@as(raw),ItemUICategory@as(raw),"
             + "ClassJobCategory@as(raw),Rarity,LevelItem@as(raw),LevelEquip,DamagePhys,DamageMag,DefensePhys,DefenseMag,DyeCount,"
-            + "BaseParam@as(raw),BaseParamValue"),
+            + "BaseParam@as(raw),BaseParamValue,IsUntradable,ItemSearchCategory@as(raw)"),
         ("TerritoryType", "Name,Map@as(raw),PlaceName.Name,PlaceNameRegion.Name,TerritoryIntendedUse@as(raw),WeatherRate@as(raw)"),
         ("WeatherRate", "Rate,Weather@as(raw)"),
         ("Weather", "Name,Icon")
@@ -74,11 +74,15 @@ internal sealed class XivApiExdImporter(HttpClient http)
         var weather = await ReadWeatherAsync(tables["TerritoryType"], tables["WeatherRate"], tables["Weather"],
             progress, token).ConfigureAwait(false);
         var items = new List<object[]>();
+        var marketItems = new List<object[]>();
         foreach (var (id, row) in tables["Item"])
         {
             token.ThrowIfCancellationRequested();
             if (Equipment(id, row, tables) is { } item)
                 items.Add(item);
+            if (id > 0 && row.TryGetProperty("IsUntradable", out var untradable) && untradable.ValueKind == JsonValueKind.False
+                && Number(row, "ItemSearchCategory@as(raw)") > 0 && Name(row) is { Length: > 0 } name)
+                marketItems.Add([id, name, Number(row, "Icon@as(raw)")]);
         }
 
         var snapshot = new
@@ -89,6 +93,7 @@ internal sealed class XivApiExdImporter(HttpClient http)
                 Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(pair.Value)))),
             wardrobeSlotCoverage = true,
             items,
+            marketItems = marketItems.Count > 0 ? marketItems : null,
             stains = tables["Stain"].Where(pair => pair.Key > 0).Select(pair =>
             {
                 var name = Name(pair.Value);

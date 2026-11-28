@@ -62,6 +62,7 @@ export interface GameCharacter {
   area: string
   homeWorld: string
   currentWorld: string
+  currentWorldId: number
   race: string | null
   tribe: string | null
   gender: string | null
@@ -160,6 +161,54 @@ export const cancelGameOperation = (id: string) => invokeClient<boolean>('Cancel
 export const signOutGame = () => invokeClient<boolean>('SignOutGame')
 export const getCommunityStatus = () => invokeClient<CommunityStatus | null>('GetCommunityStatus')
 export const selectCommunityCharacter = (id: string) => invokeClient<string | null>('SelectCommunityCharacter', [id])
+
+export interface MarketItem {
+  id: number
+  name: string
+  icon: number
+}
+
+export interface MarketRecentItem {
+  item: MarketItem
+  lastUploadTime: number
+  world: string | null
+}
+
+export interface MarketPrice {
+  pricePerUnit: number
+  quantity: number
+  hq: boolean
+  worldName: string | null
+  timestamp: number | null
+}
+
+export interface MarketBoard {
+  itemID: number
+  lastUploadTime: number
+  hasData: boolean
+  listings: MarketPrice[]
+  recentHistory: MarketPrice[]
+}
+
+export interface MarketDataCenter {
+  name: string
+  region: string
+  worlds: { id: number; name: string }[]
+}
+
+interface MarketResponse<T> {
+  data: T | null
+  error: string | null
+}
+
+export const getMarketDataCenters = () => invokeClient<MarketResponse<MarketDataCenter[]>>('GetMarketDataCenters')
+// HybridWebView sends these arguments in an HTTP header.
+export const searchMarketItems = (query: string) =>
+  invokeClient<MarketItem[]>('SearchMarketItems', [encodeURIComponent(query)])
+export const getRecentMarketItems = (worldId: number, dataCenter: string | null) =>
+  invokeClient<MarketResponse<MarketRecentItem[]>>('GetRecentMarketItems', [worldId, dataCenter === null ? null : encodeURIComponent(dataCenter)])
+export const getMarketPrices = (worldId: number, dataCenter: string | null, id: number) =>
+  invokeClient<MarketResponse<MarketBoard>>('GetMarketPrices', [worldId, dataCenter === null ? null : encodeURIComponent(dataCenter), id])
 
 export async function prepareGamePreview(characterId: string, requestId: string) {
   const response = await invokeClient<{

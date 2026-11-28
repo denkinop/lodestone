@@ -301,6 +301,7 @@ internal sealed partial class ClientCommands : IDisposable
         Volatile.Write(ref community, null);
         MainThread.BeginInvokeOnMainThread(() => browser.SetSession(null, []));
         officialHome.Dispose();
+        market.Dispose();
         cdn.Dispose();
     }
 

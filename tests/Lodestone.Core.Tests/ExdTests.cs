@@ -83,7 +83,7 @@ public sealed class ExdTests
     }
 
     [Fact]
-    public async Task PublishesBothCatalogsTogetherAndKeepsThePreviousSnapshotOnVersionMismatch()
+    public async Task PublishesCatalogsTogetherAndKeepsThePreviousSnapshotOnVersionMismatch()
     {
         var directory = Directory.CreateTempSubdirectory();
         try
@@ -100,6 +100,7 @@ public sealed class ExdTests
             var reloaded = new ExdDataStore(path, http).Current;
             Assert.Equal("fixture-1", reloaded.Version);
             Assert.Equal("测试服务器", reloaded.Character.WorldName(1));
+            Assert.Equal(new MarketItem(1, "测试装备", 12), Assert.Single(reloaded.MarketItems.Search("测试装备")));
             Assert.Equal("#123456", reloaded.Character.StainColor(1));
             var matches = reloaded.Character.Candidates(1, new CharacterEquipment("off_hand", 2, 0, 0, 0, 0));
             Assert.Collection(matches, first => Assert.Equal("测试装备", first.Name), second => Assert.Equal("测试装备 II", second.Name));
@@ -131,7 +132,8 @@ public sealed class ExdTests
         private const string Item = """
             {"Name":"测试装备","Icon@as(raw)":12,"ModelMain":1,"ModelSub":2,"EquipSlotCategory@as(raw)":1,
              "ItemUICategory@as(raw)":1,"ClassJobCategory@as(raw)":1,"Rarity":1,"LevelItem@as(raw)":3,"LevelEquip":2,
-             "DamagePhys":4,"DamageMag":5,"DefensePhys":0,"DefenseMag":0,"DyeCount":1,"BaseParam@as(raw)":[1,null],"BaseParamValue":[2,0]}
+             "DamagePhys":4,"DamageMag":5,"DefensePhys":0,"DefenseMag":0,"DyeCount":1,"BaseParam@as(raw)":[1,null],"BaseParamValue":[2,0],
+             "IsUntradable":false,"ItemSearchCategory@as(raw)":1}
             """;
 
         private static readonly Dictionary<string, string> Fields = new()
@@ -185,7 +187,8 @@ public sealed class ExdTests
 
             var rows = !nextPage ? Row(1, Fields[table])
                 : table == "Item" && uri.Query.EndsWith("&after=1", StringComparison.Ordinal)
-                    ? Row(2, Item.Replace("测试装备", "测试装备 II", StringComparison.Ordinal))
+                    ? Row(2, Item.Replace("测试装备", "测试装备 II", StringComparison.Ordinal)
+                        .Replace("\"IsUntradable\":false", "\"IsUntradable\":true", StringComparison.Ordinal))
                     : "[]";
             var version = ChangeVersionDuringWeather && table == "Weather" ? "fixture-2" : "fixture-1";
             var json = $$"""{"version":"{{version}}","schema":"fixture-schema","rows":{{rows}}}""";

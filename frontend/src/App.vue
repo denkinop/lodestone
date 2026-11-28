@@ -6,6 +6,7 @@ import CharacterSettingsPrompt from './CharacterSettingsPrompt.vue'
 import GameVersionSettings from './GameVersionSettings.vue'
 import GameLogin from './GameLogin.vue'
 import HomePage from './HomePage.vue'
+import MarketPage from './MarketPage.vue'
 import PageHeading from './PageHeading.vue'
 import UiIcon from './UiIcon.vue'
 import WardrobePage from './WardrobePage.vue'
@@ -18,7 +19,7 @@ import {
   type CommunityStatus, type ExdWeatherView, type GameCharacter, type GameResponse, type WardrobeChange,
 } from './bridge'
 
-type Screen = 'home' | 'choose' | 'profile' | 'wardrobe' | 'weather' | 'settings'
+type Screen = 'home' | 'choose' | 'profile' | 'wardrobe' | 'weather' | 'market' | 'settings'
 const screen = ref<Screen>('home')
 const game = ref<GameResponse>()
 const community = ref<CommunityStatus>()
@@ -445,6 +446,8 @@ onBeforeUnmount(() => {
         :prompt="restoring || signingOut ? characterPrompt : game ? '请在设置中选择角色。' : '请在设置中登录后选择角色。'"
         :can-open-settings="!restoring && !signingOut" :draft="wardrobeDraft"
         @settings="go('settings')" @draft="wardrobeDraft = $event" />
+
+      <MarketPage v-if="screen === 'market'" :key="gameCharacter?.id" :character="gameCharacter" />
 
       <main v-if="screen === 'choose' && game" class="choose-page">
         <PageHeading title="选择角色">

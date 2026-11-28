@@ -35,8 +35,9 @@ public sealed class ExdCatalog
     public string Version { get; }
     public CharacterData Character { get; }
     public WeatherCatalog Weather { get; }
+    public MarketItemCatalog MarketItems { get; }
 
-    private ExdCatalog(JsonElement data, CharacterData? fallback)
+    private ExdCatalog(JsonElement data, ExdCatalog? fallback)
     {
         if (data.GetProperty("format").GetInt32() != Format)
             throw new InvalidDataException("不支持此 EXD 快照格式");
@@ -49,7 +50,9 @@ public sealed class ExdCatalog
         Weather = data.GetProperty("weather").Deserialize<WeatherCatalog>()
             ?? throw new InvalidDataException("EXD 缺少天气数据");
         Validate(Weather);
-        Character = new CharacterData(data, fallback);
+        Character = new CharacterData(data, fallback?.Character);
+        MarketItems = data.TryGetProperty("marketItems", out var marketItems) && marketItems.ValueKind == JsonValueKind.Array
+            ? MarketItemCatalog.Read(marketItems) : fallback?.MarketItems ?? MarketItemCatalog.Empty;
     }
 
     private static ExdCatalog LoadBundled()
@@ -59,7 +62,7 @@ public sealed class ExdCatalog
         return Read(resource);
     }
 
-    internal static ExdCatalog Read(Stream compressed, CharacterData? fallback = null)
+    internal static ExdCatalog Read(Stream compressed, ExdCatalog? fallback = null)
     {
         using var input = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: true);
         using var json = JsonDocument.Parse(input);
@@ -132,7 +135,7 @@ public sealed class ExdDataStore
             var snapshot = await importer.DownloadAsync(progress, cancellationToken).ConfigureAwait(false);
             progress?.Invoke("正在校验并保存 EXD 快照…");
             using var source = new MemoryStream(snapshot, writable: false);
-            var catalog = ExdCatalog.Read(source);
+            var catalog = ExdCatalog.Read(source, ExdCatalog.Bundled);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
@@ -160,7 +163,7 @@ public sealed class ExdDataStore
         try
         {
             using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-            return ExdCatalog.Read(input, ExdCatalog.Bundled.Character);
+            return ExdCatalog.Read(input, ExdCatalog.Bundled);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException
             or KeyNotFoundException or InvalidOperationException or ArgumentException or FormatException or OverflowException

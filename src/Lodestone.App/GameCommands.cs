@@ -446,7 +446,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             character.ClassJobId, character.Level, character.DetailError,
             CharacterScene.DescribeGear(character.Equipment, null, entry.Data), CharacterData.GetTribeName(character.Appearance?.Tribe),
             entry.PortraitRoot, entry.Revision.ToString("D"), FormatBirthday(character.Birthday),
-            entry.Data.GuardianName(character.GuardianDeityId));
+            entry.Data.GuardianName(character.GuardianDeityId), character.CurrentWorld.Id);
     }
 
     private static string? FormatBirthday(CharacterBirthday? birthday) => birthday is { Month: >= 1 and <= 12, Day: >= 1 and <= 32 }
@@ -564,4 +564,5 @@ internal sealed record GameCharacter(
     [property: JsonPropertyName("portraitRoot")] string PortraitRoot,
     [property: JsonPropertyName("revision")] string Revision,
     [property: JsonPropertyName("birthday")] string? Birthday,
-    [property: JsonPropertyName("deity")] string? Deity);
+    [property: JsonPropertyName("deity")] string? Deity,
+    [property: JsonPropertyName("currentWorldId")] int CurrentWorldId);
