@@ -26,6 +26,7 @@ const busy = ref(false)
 const capturing = ref(false)
 const exporting = ref(false)
 const message = ref('')
+const portraitError = ref('')
 const loadedSlots = ref<string[]>([])
 const hideHelmet = ref(true)
 const aetherBackground = import.meta.env.BASE_URL + 'images/portrait-background.jpg'
@@ -75,8 +76,9 @@ async function loadScene(resources: Resources, signal: AbortSignal) {
   return await response.json()
 }
 
-function loadViewer(viewer: Viewer, scene: Awaited<ReturnType<typeof loadScene>>, resources: Resources, signal: AbortSignal) {
-  return viewer.load(scene, signal, (id: string) => resources.textureRoot + encodeURIComponent(id) + '.png')
+function loadViewer(viewer: Viewer, scene: Awaited<ReturnType<typeof loadScene>>, resources: Resources,
+  signal: AbortSignal, requireTextures = false) {
+  return viewer.load(scene, signal, (id: string) => resources.textureRoot + encodeURIComponent(id) + '.png', requireTextures)
 }
 
 function prepareGame() {
@@ -95,11 +97,12 @@ function prepareGame() {
 
 async function renderPortraits() {
   const { appearance, portraitRoot } = props.character
-  if (!appearance) return
+  if (!appearance || capturing.value) return
   const signal = lifetime.signal
   capturing.value = true
   emit('portraitStart', portraitRoot)
   message.value = ''
+  portraitError.value = ''
   function setPortrait(mode: View, png?: string) {
     const url = portraitRoot + mode + '.png'
     const source = png ?? (mode === 'portrait' ? `${url}?capture=${nativeRequest}` : url)
@@ -121,7 +124,9 @@ async function renderPortraits() {
     if (signal.aborted || !offscreen.value || !nativeRequest) return
     captureViewer = new runtime.Viewer(offscreen.value)
     captureViewer.setHidden('head', true)
-    await loadViewer(captureViewer, scene, resources, signal)
+    const missing = await loadViewer(captureViewer, scene, resources, signal, true)
+    if (signal.aborted) return
+    if (missing) throw new Error(`有 ${missing} 张贴图未能加载，无法生成角色图片`)
     for (const mode of ['full', 'portrait'] as const) {
       if (signal.aborted) return
       if (resources[mode]) continue
@@ -133,12 +138,25 @@ async function renderPortraits() {
       setPortrait(mode, saved ? undefined : png)
     }
   } catch (error) {
-    if (!signal.aborted) message.value = error instanceof Error ? error.message : '无法生成角色图片'
+    if (!signal.aborted) portraitError.value = error instanceof Error ? error.message : '无法生成角色图片'
   } finally {
     captureViewer?.dispose()
     capturing.value = false
     if (!signal.aborted) emit('portraitFinish', portraitRoot)
   }
+}
+
+function releasePreparedGame() {
+  const id = nativeRequest
+  nativeRequest = undefined
+  prepared = undefined
+  if (id) void releaseGamePreview(id).catch(() => {})
+}
+
+function retryPortraits() {
+  if (capturing.value || live.value) return
+  releasePreparedGame()
+  return renderPortraits()
 }
 
 function stopLive() {
@@ -159,7 +177,6 @@ async function toggleLive() {
     return
   }
   if (capturing.value) return
-  if (!portraits.value.full) await renderPortraits()
   if (!props.active || lifetime.signal.aborted) return
   message.value = ''
   live.value = true
@@ -226,7 +243,7 @@ onMounted(renderPortraits)
 onBeforeUnmount(() => {
   lifetime.abort()
   stopLive()
-  if (nativeRequest) void releaseGamePreview(nativeRequest).catch(() => {})
+  releasePreparedGame()
 })
 </script>
 
@@ -259,8 +276,9 @@ onBeforeUnmount(() => {
         </button>
         <CameraHeightSlider v-if="live && !busy" class="hero-camera-height"
           :model-value="cameraHeight" @update:model-value="setCameraHeight" />
-        <p v-if="message || (capturing && !staticPortrait) || !character.appearance" class="hero-message" role="status">
-          {{ message || (capturing ? '正在准备角色图片…' : character.detailError || '暂无角色外观') }}
+        <p v-if="message || (!live && portraitError) || (capturing && !staticPortrait) || !character.appearance"
+          class="hero-message" role="status">
+          {{ message || (!live && portraitError) || (capturing ? '正在准备角色图片…' : character.detailError || '暂无角色外观') }}
         </p>
       </div>
       <slot name="accessories" />
@@ -271,6 +289,9 @@ onBeforeUnmount(() => {
         <button type="button" :aria-pressed="view === 'portrait'" @click="setView('portrait')">面部</button>
       </div>
       <div class="hero-actions">
+        <button v-if="!live && portraitError && !capturing" type="button" class="hero-button" @click="retryPortraits">
+          重试生成图片
+        </button>
         <button type="button" class="hero-button hero-live" :aria-pressed="live"
           :disabled="capturing || !character.appearance" @click="toggleLive">
           <UiIcon name="cube" :size="17" />
@@ -294,6 +315,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.hero-actions { flex-wrap: wrap; }
 .portrait-capture { position: fixed; left: -10000px; top: 0; width: 440px; height: 600px; visibility: hidden; }
 .portrait-capture canvas { display: block; width: 100%; height: 100%; }
 </style>

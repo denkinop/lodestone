@@ -39,7 +39,7 @@ internal sealed partial class ClientCommands : IDisposable
     public Task<OfficialFeed<OfficialBanner>> GetOfficialBanners() => officialHome.GetBannersAsync();
     public Task<OfficialFeed<OfficialNews>> GetOfficialNews() => officialHome.GetNewsAsync();
     public Task<OfficialFeed<OfficialActivity>> GetOfficialCalendar(string month) => officialHome.GetCalendarAsync(month);
-    public Task<AreaResponse> GetGameAreas() => game.GetAreasAsync();
+    public Task<AreaResponse> GetGameAreas(bool refresh) => game.GetAreasAsync(refresh);
     public GameResponse? GetCurrentGame() => game.GetCurrent();
     public Task<ExdWeatherView> GetExdWeather() => Task.Run(() => WeatherView(Exd.Current));
     public string? GetExdProgress() => Volatile.Read(ref exdProgress);

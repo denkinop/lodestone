@@ -7,7 +7,7 @@ namespace Lodestone.Core.Database;
 public sealed partial class GarlandDatabaseClient
 {
     private static GarlandDetail Describe(GarlandEntry entry, JsonElement record, JsonElement doc, string? location,
-        (decimal X, decimal Y)? coordinates, GarlandMap? map)
+        (decimal X, decimal Y)? coordinates, GarlandMap? map, ExdCatalog catalog)
     {
         var fields = new List<GarlandField>();
         var links = new List<GarlandLinks>();
@@ -38,9 +38,8 @@ public sealed partial class GarlandDatabaseClient
                     || entries.Any(item => item.Id == id))
                     continue;
                 var item = partials.GetValueOrDefault((type, id));
-                if (item is null && type == "item" && int.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var itemId)
-                    && ExdCatalog.Bundled.MarketItems.Find(itemId) is { } known)
-                    item = new(type, id, known.Name, known.Icon, null);
+                if (item is null && type == "item")
+                    item = FindLocalItem(catalog, id) is { } known ? known with { Summary = null } : null;
                 item ??= new(type, id, $"#{id}", 0, null);
                 var count = Text(value, "num") ?? Text(value, "amount");
                 entries.Add(count is null ? item : item with { Summary = $"数量 {count}" });

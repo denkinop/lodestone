@@ -11,7 +11,7 @@ dotnet workload install maui-windows
 .\scripts\build-windows.ps1
 ```
 
-脚本执行前端构建、NuGet 锁定恢复、Windows 编译和离线核心测试。运行 `src\Lodestone.App\bin\Release\net10.0-windows10.0.19041.0\win-x64\Lodestone.App.exe`。使用 `-Publish` 可生成自包含的应用目录，发布文件位于同一输出树下的 `publish`。
+脚本执行前端测试和构建、NuGet 锁定恢复、Windows 编译和离线核心测试。运行 `src\Lodestone.App\bin\Release\net10.0-windows10.0.19041.0\win-x64\Lodestone.App.exe`。使用 `-Publish` 可生成自包含的应用目录，发布文件位于同一输出树下的 `publish`。
 
 ## 构建 Android 版
 
@@ -22,7 +22,7 @@ dotnet workload install maui-android
 .\scripts\build-android.ps1
 ```
 
-可用 `-AndroidSdkDirectory` 和 `-JavaSdkDirectory` 指定 SDK 路径。APK 位于 `src\Lodestone.App\bin\Release\android-apk\com.denkinop.lodestone-Signed.apk`，使用本机 Android 调试密钥签名，可直接安装测试。导出的角色 PNG 保存在系统下载目录。
+脚本在发布 APK 前执行前端测试和构建。可用 `-AndroidSdkDirectory` 和 `-JavaSdkDirectory` 指定 SDK 路径。APK 位于 `src\Lodestone.App\bin\Release\android-apk\com.denkinop.lodestone-Signed.apk`，使用本机 Android 调试密钥签名，可直接安装测试。导出的角色 PNG 保存在系统下载目录。
 
 ## 核对 Windows 预览
 

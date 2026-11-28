@@ -8,14 +8,16 @@ internal sealed class DatabaseItemCatalog
 {
     private const int NoMatch = 4;
     internal static DatabaseItemCatalog Empty { get; } = new([]);
-    private readonly DatabaseItem[] items;
+    private readonly Dictionary<int, DatabaseItem> items;
 
-    private DatabaseItemCatalog(DatabaseItem[] items) => this.items = items;
+    private DatabaseItemCatalog(IEnumerable<DatabaseItem> items) => this.items = items.ToDictionary(item => item.Id);
 
     internal static DatabaseItemCatalog Read(JsonElement rows) => new(rows.EnumerateArray().Select(row =>
-        new DatabaseItem(row[0].GetInt32(), row[1].GetString() ?? "", row[2].GetInt32(), row[3].GetInt32())).ToArray());
+        new DatabaseItem(row[0].GetInt32(), row[1].GetString() ?? "", row[2].GetInt32(), row[3].GetInt32())));
 
-    internal DatabaseItem[] Search(string query, int limit) => items.Select(item => (Item: item, Rank: MatchRank(item.Name, query)))
+    internal DatabaseItem? Find(int id) => items.GetValueOrDefault(id);
+
+    internal DatabaseItem[] Search(string query, int limit) => items.Values.Select(item => (Item: item, Rank: MatchRank(item.Name, query)))
         .Where(result => result.Rank < NoMatch)
         .OrderBy(result => result.Rank).ThenBy(result => result.Item.Name.Length).ThenBy(result => result.Item.Id)
         .Take(limit).Select(result => result.Item).ToArray();

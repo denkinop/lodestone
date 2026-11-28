@@ -16,21 +16,26 @@ const area = ref<number>()
 const active = ref<string>()
 const progress = ref<GameProgress>()
 const error = ref(props.logoutError)
+const areaNotice = ref('')
 const cancelling = ref(false)
 const loadingAreas = ref(false)
 const checkingSaved = ref(true)
 let poll: ReturnType<typeof setTimeout> | undefined
 let mounted = true
 
-async function loadAreas(preserveError = false) {
+async function loadAreas(refresh = false) {
   if (loadingAreas.value) return
   loadingAreas.value = true
-  if (!preserveError) error.value = ''
+  areaNotice.value = ''
+  if (refresh) error.value = ''
   try {
-    const result = await getGameAreas()
+    const result = await getGameAreas(refresh)
     if (result.error && !error.value) error.value = result.error
-    areas.value = result.areas
-    if (!areas.value.some(option => option.id === area.value)) area.value = undefined
+    areaNotice.value = result.notice ?? ''
+    if (result.areas.length) {
+      areas.value = result.areas
+      if (!areas.value.some(option => option.id === area.value)) area.value = undefined
+    }
   } catch {
     if (!error.value) error.value = '无法加载官方大区列表'
   } finally {
@@ -57,7 +62,10 @@ async function login(loginMode: 'phone' | 'scan' | 'saved' = mode.value) {
   const enteredAccount = loginMode === 'phone' ? account.value.trim() : ''
   active.value = id
   error.value = ''
-  progress.value = { status: loginMode === 'saved' ? '正在读取已保存的角色信息' : '正在连接盛趣', number: null, qr: null }
+  progress.value = {
+    status: loginMode === 'saved' ? '正在读取已保存的角色信息' : '正在连接盛趣',
+    number: null, qr: null, canCancel: true,
+  }
   schedule(id)
   try {
     const result = await beginGameLogin(id, loginMode, enteredAccount, selectedArea, loginMode !== 'saved' && remember.value)
@@ -90,7 +98,11 @@ async function cancel() {
   if (!id || cancelling.value) return
   cancelling.value = true
   try {
-    await cancelGameOperation(id)
+    const accepted = await cancelGameOperation(id)
+    if (!accepted && active.value === id) {
+      cancelling.value = false
+      if (progress.value) progress.value = { ...progress.value, canCancel: false }
+    }
   } catch {
     if (active.value === id) {
       cancelling.value = false
@@ -117,7 +129,7 @@ onMounted(async () => {
     if (props.renewing) remember.value = true
   }
   checkingSaved.value = false
-  await loadAreas(Boolean(props.logoutError))
+  await loadAreas()
 })
 onBeforeUnmount(() => {
   mounted = false
@@ -136,7 +148,11 @@ onBeforeUnmount(() => {
           <option v-for="option in areas" :key="option.id" :value="option.id">{{ option.name }}</option>
         </select>
       </div>
-      <button v-if="!areas.length && !checkingSaved && !loadingAreas" class="secondary" type="button" @click="loadAreas()">重新读取大区</button>
+      <div class="game-actions">
+        <button class="secondary" type="button" :disabled="Boolean(active) || checkingSaved || loadingAreas"
+          @click="loadAreas(true)">刷新大区列表</button>
+      </div>
+      <p v-if="areaNotice" role="status">{{ areaNotice }}</p>
       <div v-if="savedArea !== null && !renewing" class="game-actions">
         <button class="secondary" type="button" :disabled="Boolean(active)" @click="login('saved')">使用已保存登录</button>
         <button class="secondary" type="button" :disabled="Boolean(active)" @click="forget">清除已保存登录</button>
@@ -163,7 +179,7 @@ onBeforeUnmount(() => {
     <div v-if="progress" class="paper settings-panel game-progress" role="status">
       <p>{{ progress.status }}<strong v-if="progress.number"> · 确认编号 {{ progress.number }}</strong></p>
       <img v-if="progress.qr" :src="progress.qr" width="120" height="120" alt="叨鱼登录二维码">
-      <button class="secondary" type="button" :disabled="cancelling" @click="cancel">取消</button>
+      <button v-if="progress.canCancel" class="secondary" type="button" :disabled="cancelling" @click="cancel">取消</button>
     </div>
     <p v-if="error" class="login-error" role="alert">{{ error }}</p>
   </div>

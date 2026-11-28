@@ -31,6 +31,7 @@ const detailHeading = ref<HTMLElement>()
 const resultHeading = ref<HTMLElement>()
 const results = shallowRef<DatabaseEntry[]>()
 const searchError = ref('')
+const searchNotice = ref('')
 const searching = ref(false)
 const submitted = ref('')
 const page = ref(0)
@@ -59,6 +60,7 @@ async function search(term = query.value.trim()) {
   results.value = undefined
   page.value = 0
   searchError.value = ''
+  searchNotice.value = ''
   submitted.value = term
   searching.value = Boolean(term || category.value === 'patch')
   if (!searching.value) return
@@ -67,6 +69,7 @@ async function search(term = query.value.trim()) {
     if (request !== searchRequest) return
     results.value = response.data ?? undefined
     searchError.value = response.error ?? ''
+    searchNotice.value = response.notice ?? ''
   } catch {
     if (request === searchRequest) searchError.value = '无法搜索数据库，请重试。'
   } finally {
@@ -206,6 +209,9 @@ function changePage(next: number) {
       <div class="database-results-heading">
         <h2 id="database-results-title" ref="resultHeading" tabindex="-1">{{ category === 'patch' && !submitted ? '版本' : '查询结果' }}</h2>
         <span v-if="results?.length">{{ results.length }} 项</span>
+      </div>
+      <div v-if="searchNotice" class="database-status" role="status">
+        <span>{{ searchNotice }}</span><button class="secondary" type="button" @click="search(submitted)">重试</button>
       </div>
       <p v-if="searching" class="database-status" role="status">正在查询 Garland Tools…</p>
       <div v-else-if="searchError" class="database-status" role="status">

@@ -14,57 +14,98 @@ public sealed class GameArea
     internal int Order { get; }
 }
 
-public sealed partial class GameAreaDirectory(string? cacheFile = null) : IDisposable
+public sealed partial class GameAreaDirectory : IDisposable
 {
+    private const int MaximumScriptLength = 65536;
+    private const int MaximumBytes = MaximumScriptLength * 4;
+    private static readonly TimeSpan CacheLifetime = TimeSpan.FromDays(1);
     private static readonly Uri DirectoryUri = new("https://ff.dorado.sdo.com/ff/area/serverlist_new.js");
-    private readonly HttpClient http = new(new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false })
-    {
-        Timeout = TimeSpan.FromSeconds(15)
-    };
+    private readonly string? cacheFile;
+    private readonly HttpClient http;
+    private readonly TimeProvider clock;
 
-    public async Task<IReadOnlyList<GameArea>> GetAsync(CancellationToken cancellationToken = default, bool refresh = false)
+    public GameAreaDirectory(string? cacheFile = null) : this(cacheFile,
+        new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false })
+        {
+            Timeout = TimeSpan.FromSeconds(15),
+            MaxResponseContentBufferSize = MaximumBytes
+        }, TimeProvider.System) { }
+
+    internal GameAreaDirectory(string? cacheFile, HttpClient http, TimeProvider clock)
     {
-        if (!refresh && await ReadCachedAsync(cancellationToken) is { } cached)
-            return cached;
+        this.cacheFile = cacheFile is null ? null : Path.GetFullPath(cacheFile);
+        this.http = http;
+        this.clock = clock;
+    }
+
+    public async Task<IReadOnlyList<GameArea>> GetAsync(CancellationToken cancellationToken = default, bool refresh = false) =>
+        (await GetWithStatusAsync(cancellationToken, refresh).ConfigureAwait(false)).Areas;
+
+    public async Task<(IReadOnlyList<GameArea> Areas, bool UsedFallback)> GetWithStatusAsync(
+        CancellationToken cancellationToken = default, bool refresh = false)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var cached = await ReadCacheAsync(cancellationToken).ConfigureAwait(false);
+        var now = clock.GetUtcNow();
+        if (!refresh && cached is { } snapshot && snapshot.WrittenAt <= now && now - snapshot.WrittenAt < CacheLifetime)
+            return (snapshot.Areas, false);
         try
         {
-            var script = await http.GetStringAsync(DirectoryUri, cancellationToken);
+            var script = await http.GetStringAsync(DirectoryUri, cancellationToken).ConfigureAwait(false);
             var areas = Parse(script);
             if (cacheFile is not null)
             {
-                try
-                {
-                    Directory.CreateDirectory(Path.GetDirectoryName(cacheFile)!);
-                    await File.WriteAllTextAsync(cacheFile, script, cancellationToken);
-                }
+                try { await SaveCacheAsync(cacheFile, script, cancellationToken).ConfigureAwait(false); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             }
-            return areas;
+            return (areas, false);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or FormatException or KeyNotFoundException
             or InvalidOperationException || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (cached is { } fallback)
+                return (fallback.Areas, true);
             throw new LobbyException("无法读取官方大区目录");
         }
     }
 
-    public async Task<IReadOnlyList<GameArea>?> ReadCachedAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<GameArea>?> ReadCachedAsync(CancellationToken cancellationToken = default) =>
+        (await ReadCacheAsync(cancellationToken).ConfigureAwait(false))?.Areas;
+
+    private async Task<(IReadOnlyList<GameArea> Areas, DateTimeOffset WrittenAt)?> ReadCacheAsync(CancellationToken cancellationToken)
     {
         try
         {
-            if (cacheFile is not null && new FileInfo(cacheFile) is { Exists: true, Length: <= 65536 })
-                return Parse(await File.ReadAllTextAsync(cacheFile, cancellationToken));
+            if (cacheFile is not null && new FileInfo(cacheFile) is { Exists: true, Length: <= MaximumBytes } file)
+            {
+                var writtenAt = file.LastWriteTimeUtc;
+                return (Parse(await File.ReadAllTextAsync(cacheFile, cancellationToken).ConfigureAwait(false)), writtenAt);
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or FormatException
             or KeyNotFoundException or InvalidOperationException) { }
         return null;
     }
 
+    private static async Task SaveCacheAsync(string file, string script, CancellationToken token)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        var temporary = file + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporary, script, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            File.Move(temporary, file, overwrite: true);
+        }
+        finally { File.Delete(temporary); }
+    }
+
     internal static IReadOnlyList<GameArea> Parse(string value)
     {
         var script = value.Trim().TrimEnd(';').TrimEnd();
         const string prefix = "var servers=";
-        if (script.Length > 65536 || !script.StartsWith(prefix, StringComparison.Ordinal))
+        if (script.Length > MaximumScriptLength || !script.StartsWith(prefix, StringComparison.Ordinal))
             throw new FormatException();
         using var document = JsonDocument.Parse(script[prefix.Length..]);
         var areas = new Dictionary<int, GameArea>();

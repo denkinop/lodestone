@@ -92,8 +92,8 @@ internal static class PreviewCache
 
     private static string PngCacheName(string file) => file switch
     {
-        "full.png" => "full-v2.png",
-        "portrait.png" => "portrait-v3.png",
+        "full.png" => "full-v3.png",
+        "portrait.png" => "portrait-v4.png",
         _ => file
     };
 

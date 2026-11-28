@@ -11,12 +11,16 @@ internal sealed partial class ClientCommands
 
     public Task<DatabaseResponse<GarlandEntry[]>> SearchGameDatabase(string encodedQuery, string type) =>
         ReadDatabaseAsync<GarlandEntry[]>(async token =>
-            await garland.SearchAsync(Uri.UnescapeDataString(encodedQuery), type, token).ConfigureAwait(false));
+        {
+            var (entries, localOnly) = await garland.SearchWithStatusAsync(Uri.UnescapeDataString(encodedQuery), type, token)
+                .ConfigureAwait(false);
+            return new(entries, Notice: localOnly ? "Garland Tools 暂不可用，当前仅显示本地物品。" : null);
+        });
 
     public Task<DatabaseResponse<GarlandDetail>> GetGameDatabaseEntry(string type, string id) =>
-        ReadDatabaseAsync(token => garland.GetDetailAsync(type, id, token));
+        ReadDatabaseAsync<GarlandDetail>(async token => new(await garland.GetDetailAsync(type, id, token).ConfigureAwait(false)));
 
-    private async Task<DatabaseResponse<T>> ReadDatabaseAsync<T>(Func<CancellationToken, Task<T?>> read) where T : class
+    private async Task<DatabaseResponse<T>> ReadDatabaseAsync<T>(Func<CancellationToken, Task<DatabaseResponse<T>>> read) where T : class
     {
         CancellationToken token;
         lock (gate)
@@ -27,7 +31,7 @@ internal sealed partial class ClientCommands
         }
         try
         {
-            return new(await read(token).ConfigureAwait(false));
+            return await read(token).ConfigureAwait(false);
         }
         catch (HttpRequestException ex)
         {
@@ -44,4 +48,5 @@ internal sealed partial class ClientCommands
 
 internal sealed record DatabaseResponse<T>(
     [property: JsonPropertyName("data")] T? Data = null,
-    [property: JsonPropertyName("error")] string? Error = null) where T : class;
+    [property: JsonPropertyName("error")] string? Error = null,
+    [property: JsonPropertyName("notice")] string? Notice = null) where T : class;

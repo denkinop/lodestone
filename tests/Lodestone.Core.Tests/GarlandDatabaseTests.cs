@@ -1,4 +1,7 @@
+using System.IO.Compression;
 using System.Net;
+using System.Text.Json.Nodes;
+using Lodestone.Core.Assets;
 using Lodestone.Core.Database;
 using Xunit;
 
@@ -42,6 +45,72 @@ public sealed class GarlandDatabaseTests
         Assert.Single(spruce, entry => entry.Id == "5395");
         var gear = await client.SearchAsync("秘银双手剑", "item", token);
         Assert.Contains(gear, entry => entry.Name == "以太秘银双手剑");
+    }
+
+    [Theory]
+    [InlineData("item")]
+    [InlineData("")]
+    public async Task ReturnsLocalItemsWhenRemoteSearchFails(string type)
+    {
+        using var client = new GarlandDatabaseClient(new HttpClient(new Fixture(HttpStatusCode.ServiceUnavailable)));
+        var (entries, localOnly) = await client.SearchWithStatusAsync("以太秘银双手剑", type, CancellationToken.None);
+        Assert.True(localOnly);
+        Assert.Equal(new GarlandEntry("item", "10442", "以太秘银双手剑", 34256, "品级 41"), Assert.Single(entries));
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.SearchAsync("以太秘银双手剑", "quest", CancellationToken.None));
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.SearchAsync("no-such-local-item", type, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SearchesKnownLocalItemIdsWithoutDownloadingDetails()
+    {
+        var handler = new Fixture();
+        using var client = new GarlandDatabaseClient(new HttpClient(handler));
+        var entry = Assert.Single(await client.SearchAsync("＃１０４４２", "item", CancellationToken.None));
+        Assert.Equal("以太秘银双手剑", entry.Name);
+        Assert.Empty(handler.Paths);
+    }
+
+    [Fact]
+    public async Task ReusesDetailFromNumericSearchAndRefreshesAfterExpiration()
+    {
+        var handler = new Fixture();
+        var clock = new TestClock();
+        using var client = new GarlandDatabaseClient(new HttpClient(handler), clock: clock);
+        var entry = Assert.Single(await client.SearchAsync("66214", "quest", CancellationToken.None));
+        Assert.Equal(entry, (await client.GetDetailAsync(entry.Type, entry.Id, CancellationToken.None))?.Entry);
+        Assert.NotNull(await client.GetDetailAsync(entry.Type, entry.Id, CancellationToken.None));
+        Assert.Single(handler.Paths);
+
+        clock.Now = clock.Now.AddMinutes(6);
+        Assert.NotNull(await client.GetDetailAsync(entry.Type, entry.Id, CancellationToken.None));
+        Assert.Equal(2, handler.Paths.Count);
+    }
+
+    [Fact]
+    public async Task LinkedItemsUseTheCurrentFullCatalogAndInvalidateCachedDetails()
+    {
+        var handler = new Fixture();
+        var current = ExdCatalog.Bundled;
+        using var client = new GarlandDatabaseClient(new HttpClient(handler), () => current);
+        const string id = "1021";
+        var detail = Assert.IsType<GarlandDetail>(await client.GetDetailAsync("achievement", id, CancellationToken.None));
+        Assert.Equal(new GarlandEntry("item", "10442", "以太秘银双手剑", 34256, null),
+            Assert.Single(Assert.Single(detail.Links).Entries));
+
+        using var bundled = typeof(ExdCatalog).Assembly.GetManifestResourceStream("Lodestone.Data.Exd")!;
+        using var gzip = new GZipStream(bundled, CompressionMode.Decompress);
+        var json = JsonNode.Parse(gzip)!;
+        json["databaseItems"] = JsonNode.Parse("""[[10442,"更新后的双手剑",34257,42]]""");
+        using var snapshot = new MemoryStream();
+        using (var compressed = new GZipStream(snapshot, CompressionLevel.Fastest, leaveOpen: true))
+            System.Text.Json.JsonSerializer.Serialize(compressed, json);
+        snapshot.Position = 0;
+        current = ExdCatalog.Read(snapshot, ExdCatalog.Bundled);
+
+        var updated = Assert.IsType<GarlandDetail>(await client.GetDetailAsync("achievement", id, CancellationToken.None));
+        Assert.Equal(new GarlandEntry("item", "10442", "更新后的双手剑", 34257, null),
+            Assert.Single(Assert.Single(updated.Links).Entries));
+        Assert.Equal(2, handler.Paths.Count);
     }
 
     [Fact]
@@ -96,12 +165,23 @@ public sealed class GarlandDatabaseTests
         Assert.Null(unknown.Map);
     }
 
-    private sealed class Fixture : HttpMessageHandler
+    private sealed class TestClock : TimeProvider
     {
+        internal DateTimeOffset Now { get; set; } = DateTimeOffset.UnixEpoch;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class Fixture(HttpStatusCode searchStatus = HttpStatusCode.OK) : HttpMessageHandler
+    {
+        internal List<string> Paths { get; } = [];
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var uri = request.RequestUri!;
             Assert.Equal("www.garlandtools.cn", uri.Host);
+            Paths.Add(uri.AbsolutePath);
+            if (uri.AbsolutePath == "/api/search.php" && searchStatus != HttpStatusCode.OK)
+                return Task.FromResult(new HttpResponseMessage(searchStatus));
             var json = uri.AbsolutePath switch
             {
                 "/api/search.php" => Search(uri.Query),
@@ -134,6 +214,7 @@ public sealed class GarlandDatabaseTests
                     {"achievement":{"id":1020,"name":"陆行鸟训练师","points":5,"item":8571},
                      "partials":[{"type":"item","id":"8571","obj":{"n":"羽饰装甲","c":58579}}]}
                     """,
+                "/db/doc/achievement/chs/2/1021.json" => """{"achievement":{"id":1021,"name":"测试成就","item":10442}}""",
                 "/db/doc/achievement/chs/2/999.json" => null,
                 _ => throw new InvalidOperationException("Unexpected request: " + uri.AbsolutePath)
             };

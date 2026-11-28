@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vue-tsc --noEmit && vite build"
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "vue": "3.5.25"

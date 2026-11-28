@@ -37,11 +37,17 @@ public sealed partial class GarlandDatabaseClient : IDisposable
     private const string BaseUrl = "https://www.garlandtools.cn";
     private const int SearchLimit = 100;
     private const int ItemSearchLimit = 200;
+    private const int DetailCacheLimit = 32;
+    private const int MaximumCachedDocumentBytes = 256 * 1024;
+    private static readonly TimeSpan DetailCacheLifetime = TimeSpan.FromMinutes(5);
     private static readonly HashSet<string> Types = [
         "item", "quest", "achievement", "instance", "action", "status", "fate", "leve", "node", "fishing", "npc", "mob", "patch"
     ];
     private readonly HttpClient http;
     private readonly Func<ExdCatalog> exd;
+    private readonly TimeProvider clock;
+    private readonly Dictionary<(string Type, string Id), CachedDetail> details = [];
+    private ExdCatalog? detailCatalog;
     private CoreSnapshot? core;
 
     public GarlandDatabaseClient(Func<ExdCatalog>? exd = null) : this(new HttpClient(new SocketsHttpHandler
@@ -55,16 +61,21 @@ public sealed partial class GarlandDatabaseClient : IDisposable
         MaxResponseContentBufferSize = 8 * 1024 * 1024
     }, exd) { }
 
-    internal GarlandDatabaseClient(HttpClient http, Func<ExdCatalog>? exd = null)
+    internal GarlandDatabaseClient(HttpClient http, Func<ExdCatalog>? exd = null, TimeProvider? clock = null)
     {
         this.http = http;
         this.exd = exd ?? (() => ExdCatalog.Bundled);
+        this.clock = clock ?? TimeProvider.System;
     }
 
-    public async Task<GarlandEntry[]> SearchAsync(string query, string type, CancellationToken token)
+    public async Task<GarlandEntry[]> SearchAsync(string query, string type, CancellationToken token) =>
+        (await SearchWithStatusAsync(query, type, token).ConfigureAwait(false)).Entries;
+
+    public async Task<(GarlandEntry[] Entries, bool LocalOnly)> SearchWithStatusAsync(string query, string type, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         if (type.Length > 0 && !Types.Contains(type) || query.Length > 100)
-            return [];
+            return ([], false);
         query = query.Trim();
         if (type == "patch")
         {
@@ -72,52 +83,99 @@ public sealed partial class GarlandDatabaseClient : IDisposable
             var patches = Get(Get(data, "patch"), "partialIndex");
             if (patches.ValueKind != JsonValueKind.Object)
                 throw new InvalidDataException("Garland Tools 版本目录格式无效");
-            return patches.EnumerateObject().Select(p => ReadEntry("patch", p.Name, p.Value))
+            var entries = patches.EnumerateObject().Select(p => ReadEntry("patch", p.Name, p.Value))
                 .OfType<GarlandEntry>().Where(entry => query.Length == 0
                     || entry.Id.Contains(query, StringComparison.Ordinal) || entry.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(entry => decimal.Parse(entry.Id, CultureInfo.InvariantCulture)).ToArray();
+            return (entries, false);
         }
         if (query.Length == 0)
-            return [];
+            return ([], false);
         if (type.Length > 0 && TryEntryId(query.Normalize(NormalizationForm.FormKC).TrimStart('#'), out var id))
         {
+            if (type == "item" && FindLocalItem(exd(), id) is { } localItem)
+                return ([localItem], false);
             var detail = await GetDetailAsync(type, id, token).ConfigureAwait(false);
-            return detail is null ? [] : [detail.Entry];
+            return (detail is null ? [] : [detail.Entry], false);
         }
 
-        var path = "/api/search.php?lang=chs&text=" + Uri.EscapeDataString(query)
-            + (type.Length > 0 ? "&type=" + type : "");
-        var result = await ReadAsync(path, token).ConfigureAwait(false);
-        if (result.ValueKind != JsonValueKind.Array)
-            throw new InvalidDataException("Garland Tools 搜索结果格式无效");
-        var remote = result.EnumerateArray().Select(ReadPartial).OfType<GarlandEntry>()
-            .Where(entry => type.Length == 0 || entry.Type == type)
-            .DistinctBy(entry => (entry.Type, entry.Id)).Take(SearchLimit).ToArray();
-        if (type is not ("" or "item"))
-            return remote;
-        var local = exd().DatabaseItems.Search(query, ItemSearchLimit);
+        var includesItems = type is "" or "item";
+        GarlandEntry[] remote;
+        try
+        {
+            remote = await SearchRemoteAsync(query, type, token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (includesItems && CanUseFallback(ex, token))
+        {
+            token.ThrowIfCancellationRequested();
+            var fallback = SearchLocalItems(query);
+            if (fallback.Length == 0)
+                throw;
+            return (fallback, true);
+        }
+        if (!includesItems)
+            return (remote, false);
+        var local = SearchLocalItems(query);
         if (local.Length == 0)
-            return remote;
-        var itemResults = remote.Where(entry => entry.Type == "item")
-            .Concat(local.Select(item => new GarlandEntry("item", item.Id.ToString(CultureInfo.InvariantCulture),
-                item.Name, item.Icon, item.ItemLevel > 0 ? FormattableString.Invariant($"品级 {item.ItemLevel}") : null)))
+            return (remote, false);
+        var itemResults = remote.Where(entry => entry.Type == "item").Concat(local)
             .DistinctBy(entry => entry.Id)
             .OrderBy(entry => DatabaseItemCatalog.MatchRank(entry.Name, query)).ThenBy(entry => entry.Name.Length)
             .Take(ItemSearchLimit);
-        return type == "item" ? itemResults.ToArray()
-            : remote.Where(entry => entry.Type != "item").Concat(itemResults)
-                .OrderBy(entry => DatabaseItemCatalog.MatchRank(entry.Name, query)).ToArray();
+        var merged = type == "item" ? itemResults : remote.Where(entry => entry.Type != "item").Concat(itemResults)
+            .OrderBy(entry => DatabaseItemCatalog.MatchRank(entry.Name, query));
+        return (merged.ToArray(), false);
     }
+
+    private async Task<GarlandEntry[]> SearchRemoteAsync(string query, string type, CancellationToken token)
+    {
+        var path = "/api/search.php?lang=chs&text=" + Uri.EscapeDataString(query)
+            + (type.Length > 0 ? "&type=" + type : "");
+        var (result, _) = await ReadAsync(path, token).ConfigureAwait(false);
+        if (result.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("Garland Tools 搜索结果格式无效");
+        return result.EnumerateArray().Select(ReadPartial).OfType<GarlandEntry>()
+            .Where(entry => type.Length == 0 || entry.Type == type)
+            .DistinctBy(entry => (entry.Type, entry.Id)).Take(SearchLimit).ToArray();
+    }
+
+    private GarlandEntry[] SearchLocalItems(string query) =>
+        exd().DatabaseItems.Search(query, ItemSearchLimit)
+            .Select(item => LocalItemEntry(item, item.Id.ToString(CultureInfo.InvariantCulture))).ToArray();
+
+    private static GarlandEntry? FindLocalItem(ExdCatalog catalog, string id) =>
+        int.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var itemId)
+            && catalog.DatabaseItems.Find(itemId) is { } item ? LocalItemEntry(item, id) : null;
+
+    private static GarlandEntry LocalItemEntry(DatabaseItem item, string id) =>
+        new("item", id, item.Name, item.Icon, item.ItemLevel > 0 ? FormattableString.Invariant($"品级 {item.ItemLevel}") : null);
+
+    private static bool CanUseFallback(Exception error, CancellationToken token) => !token.IsCancellationRequested
+        && error is HttpRequestException or IOException or JsonException or InvalidDataException or OperationCanceledException;
 
     public async Task<GarlandDetail?> GetDetailAsync(string type, string id, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         if (!Types.Contains(type) || !ValidId(type, id))
             return null;
+        var catalog = exd();
+        var key = (type, id);
+        lock (details)
+        {
+            if (!ReferenceEquals(detailCatalog, catalog))
+            {
+                details.Clear();
+                detailCatalog = catalog;
+            }
+            if (details.TryGetValue(key, out var cached) && cached.Expires > clock.GetUtcNow())
+                return cached.Detail;
+        }
         var version = type is "item" or "leve" ? 3 : 2;
         JsonElement doc;
+        long? bytes;
         try
         {
-            doc = await ReadAsync($"/db/doc/{type}/chs/{version}/{id}.json", token).ConfigureAwait(false);
+            (doc, bytes) = await ReadAsync($"/db/doc/{type}/chs/{version}/{id}.json", token).ConfigureAwait(false);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { return null; }
 
@@ -128,6 +186,7 @@ public sealed partial class GarlandDatabaseClient : IDisposable
         var zone = ReadPlaceId(record, "zoneid");
         var area = ReadPlaceId(record, "areaid");
         var place = zone > 0 ? zone : area;
+        var cacheable = bytes is <= MaximumCachedDocumentBytes;
         if (string.IsNullOrWhiteSpace(location) && place > 0)
         {
             try
@@ -135,20 +194,33 @@ public sealed partial class GarlandDatabaseClient : IDisposable
                 var data = await GetCoreAsync(token).ConfigureAwait(false);
                 location = Text(Get(Get(data, "locationIndex"), place.ToString(CultureInfo.InvariantCulture)), "name");
             }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException or InvalidDataException
-                || ex is OperationCanceledException && !token.IsCancellationRequested)
+            catch (Exception ex) when (CanUseFallback(ex, token))
             {
-                // Coordinates and entry data are still available if the location catalog is unreachable.
+                cacheable = false;
             }
         }
         var coordinates = ReadCoordinates(record);
         GarlandMap? map = null;
-        if ((place > 0 || !string.IsNullOrWhiteSpace(location)) && exd().Maps.Find(zone, area, location) is { } gameMap)
+        if ((place > 0 || !string.IsNullOrWhiteSpace(location)) && catalog.Maps.Find(zone, area, location) is { } gameMap)
         {
             location = Clean(location) ?? gameMap.DisplayName;
             map = new(gameMap.Id, location, coordinates?.X, coordinates?.Y);
         }
-        return Describe(entry, record, doc, location, coordinates, map);
+        var detail = Describe(entry, record, doc, location, coordinates, map, catalog);
+        token.ThrowIfCancellationRequested();
+        if (cacheable)
+        {
+            lock (details)
+            {
+                if (ReferenceEquals(detailCatalog, catalog))
+                {
+                    if (details.Count >= DetailCacheLimit && !details.ContainsKey(key))
+                        details.Remove(details.MinBy(pair => pair.Value.Expires).Key);
+                    details[key] = new(detail, clock.GetUtcNow() + DetailCacheLifetime);
+                }
+            }
+        }
+        return detail;
     }
 
     private static int ReadPlaceId(JsonElement record, string field) =>
@@ -157,16 +229,16 @@ public sealed partial class GarlandDatabaseClient : IDisposable
     private async Task<JsonElement> GetCoreAsync(CancellationToken token)
     {
         var cached = Volatile.Read(ref core);
-        if (cached is not null && cached.Expires > DateTimeOffset.UtcNow)
+        if (cached is not null && cached.Expires > clock.GetUtcNow())
             return cached.Data;
-        var data = await ReadAsync("/db/doc/core/chs/3/data.json", token).ConfigureAwait(false);
+        var (data, _) = await ReadAsync("/db/doc/core/chs/3/data.json", token).ConfigureAwait(false);
         if (Get(data, "patch").ValueKind != JsonValueKind.Object)
             throw new InvalidDataException("Garland Tools 目录格式无效");
-        Volatile.Write(ref core, new(data, DateTimeOffset.UtcNow.AddHours(1)));
+        Volatile.Write(ref core, new(data, clock.GetUtcNow().AddHours(1)));
         return data;
     }
 
-    private async Task<JsonElement> ReadAsync(string path, CancellationToken token)
+    private async Task<(JsonElement Data, long? Bytes)> ReadAsync(string path, CancellationToken token)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, BaseUrl + path);
         request.Headers.UserAgent.ParseAdd("Lodestone/1.0");
@@ -175,7 +247,7 @@ public sealed partial class GarlandDatabaseClient : IDisposable
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: token).ConfigureAwait(false);
-        return doc.RootElement.Clone();
+        return (doc.RootElement.Clone(), stream.CanSeek ? stream.Length : null);
     }
 
     private static GarlandEntry? ReadPartial(JsonElement row)
@@ -248,5 +320,6 @@ public sealed partial class GarlandDatabaseClient : IDisposable
     private static partial Regex Tags();
 
     public void Dispose() => http.Dispose();
+    private sealed record CachedDetail(GarlandDetail Detail, DateTimeOffset Expires);
     private sealed record CoreSnapshot(JsonElement Data, DateTimeOffset Expires);
 }

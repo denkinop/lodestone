@@ -30,14 +30,15 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         get { lock (gate) return session?.Community; }
     }
 
-    internal async Task<AreaResponse> GetAreasAsync()
+    internal async Task<AreaResponse> GetAreasAsync(bool refresh)
     {
         try
         {
-            var fetched = await directory.GetAsync();
+            var (fetched, usedFallback) = await directory.GetWithStatusAsync(refresh: refresh);
             lock (gate)
                 areas = fetched.ToDictionary(area => area.Id);
-            return new AreaResponse(fetched.Select(area => new AreaOption(area.Id, area.Name)).ToArray());
+            return new AreaResponse(fetched.Select(area => new AreaOption(area.Id, area.Name)).ToArray(),
+                Notice: usedFallback ? "无法更新官方大区列表，正在使用上次保存的列表。" : null);
         }
         catch (Exception ex) when (ex is LobbyException or ObjectDisposedException)
         {
@@ -91,33 +92,41 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                 catalog = new CachedCatalog([], [], null, null).WithRoster(result);
             }
             token.ThrowIfCancellationRequested();
-            string? notice = null;
-            var credentialStored = authorization.SavedLogin is { } saved
-                && await SaveLoginAsync(current, installation, areaId, area.Name, saved, token);
-            if (authorization.SavedLogin is null && !await savedLogins.ForgetAsync())
-                notice = "无法清除本机此前保存的登录状态";
-            if (notice is null && remember && !credentialStored)
-                notice = "已登录，本次未能保存登录状态";
-            GameResponse response;
+            if (firstRead)
+                CharacterCache.Save(directoryPath, catalog);
+            var community = new CommunityAccess(authorization.AccountId, areaId, false, authorization.CommunityCookies, [], null);
+            var next = new GameSession(areaId, area.Name, directoryPath, community, catalog) { Authorization = authorization };
+            var response = Present(next);
+            Task<bool> persistence;
             lock (gate)
             {
                 token.ThrowIfCancellationRequested();
-                if (firstRead)
-                    CharacterCache.Save(directoryPath, catalog);
+                current.Status = "正在完成登录";
+                // Sign-out must observe the pending write before it can clear saved credentials.
+                persistence = current.Persistence = authorization.SavedLogin is { } saved
+                    ? savedLogins.SaveAsync(installation, areaId, area.Name, saved, CancellationToken.None)
+                    : savedLogins.ForgetAsync();
+            }
+            var stored = await persistence;
+            var credentialStored = authorization.SavedLogin is not null && stored;
+            var notice = authorization.SavedLogin is null && !stored ? "无法清除本机此前保存的登录状态"
+                : remember && !credentialStored ? "已登录，本次未能保存登录状态" : null;
+            response = response with { Notice = notice };
+            lock (gate)
+            {
+                if (current.SignedOut)
+                    return Failed("已退出登录");
+                if (disposed)
+                    return response;
                 var attempt = new CommunityAttempt(auth, authorization);
-                var community = new CommunityAccess(authorization.AccountId, areaId, credentialStored, authorization.CommunityCookies,
-                    [], attempt.Ticket);
-                var next = new GameSession(areaId, area.Name, directoryPath, community, catalog)
-                {
-                    Authorization = authorization, CommunityAttempt = attempt,
-                };
+                next.Community = community with { Remember = credentialStored, Ticket = attempt.Ticket };
+                next.CommunityAttempt = attempt;
                 ClearSession();
                 session = next;
-                response = Present(next);
                 auth = null;
             }
             SessionChanged?.Invoke();
-            return response with { Notice = notice };
+            return response;
         }
         catch (OperationCanceledException)
         {
@@ -352,7 +361,8 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
             if (!Matches(requestId))
                 return null;
             return new GameProgress(operation!.Status, (operation.Challenge as PhoneConfirmation)?.Number,
-                operation.Challenge is ScanConfirmation ? "/_login/" + operation.Id.ToString("D") + ".png" : null);
+                operation.Challenge is ScanConfirmation ? "/_login/" + operation.Id.ToString("D") + ".png" : null,
+                CanCancel: operation.Persistence is null);
         }
     }
 
@@ -370,7 +380,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
     {
         lock (gate)
         {
-            if (!Matches(requestId))
+            if (!Matches(requestId) || operation!.Persistence is not null)
                 return false;
             operation!.Cancellation.Cancel();
             operation.Challenge = null;
@@ -390,10 +400,22 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
                 current.Challenge = null;
             }
             ClearSession();
-            forget = signingOut = savedLogins.ForgetAsync();
+            forget = signingOut = ForgetAfterLoginAsync(operation?.Persistence);
         }
         SessionChanged?.Invoke();
         return forget;
+    }
+
+    private async Task<bool> ForgetAfterLoginAsync(Task<bool>? persistence)
+    {
+        bool cleared;
+        try
+        {
+            if (persistence is not null)
+                await persistence;
+        }
+        finally { cleared = await savedLogins.ForgetAsync(); }
+        return cleared;
     }
 
     private void ClearSession()
@@ -478,6 +500,7 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         internal CancellationTokenSource Cancellation { get; } = new();
         internal LoginChallenge? Challenge { get; set; }
         internal bool SignedOut { get; set; }
+        internal Task<bool>? Persistence { get; set; }
     }
 
     private sealed class GameSession(int areaId, string areaName, string directory, CommunityAccess community,
@@ -488,8 +511,8 @@ internal sealed class GameCommands(GameVersionService versions, Func<int> lobbyV
         internal int AreaId { get; } = areaId;
         internal string AreaName { get; set; } = areaName;
         internal string Directory { get; } = directory;
-        internal CommunityAccess Community { get; } = community;
-        internal CommunityAttempt? CommunityAttempt { get; init; }
+        internal CommunityAccess Community { get; set; } = community;
+        internal CommunityAttempt? CommunityAttempt { get; set; }
         internal CachedCatalog Catalog { get; set; } = catalog;
         internal int? ViewIndex { get; set; } = catalog.Choice?.Index ?? catalog.ViewIndex;
     }
@@ -523,7 +546,8 @@ internal sealed record CommunityAccess(string AccountId, int AreaId, bool Rememb
 
 internal sealed record AreaResponse(
     [property: JsonPropertyName("areas")] AreaOption[] Areas,
-    [property: JsonPropertyName("error")] string? Error = null);
+    [property: JsonPropertyName("error")] string? Error = null,
+    [property: JsonPropertyName("notice")] string? Notice = null);
 
 internal sealed record AreaOption(
     [property: JsonPropertyName("id")] int Id,
@@ -532,7 +556,8 @@ internal sealed record AreaOption(
 internal sealed record GameProgress(
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("number")] string? Number,
-    [property: JsonPropertyName("qr")] string? Qr);
+    [property: JsonPropertyName("qr")] string? Qr,
+    [property: JsonPropertyName("canCancel")] bool CanCancel);
 
 internal sealed record GameResponse(
     [property: JsonPropertyName("accounts")] GameAccount[] Accounts,

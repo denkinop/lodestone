@@ -54,6 +54,7 @@ export interface GameProgress {
   status: string
   number: string | null
   qr: string | null
+  canCancel: boolean
 }
 
 export interface GameCharacter {
@@ -148,7 +149,8 @@ export const getExdWeather = () => invokeClient<ExdWeatherView>('GetExdWeather')
 export const getExdProgress = () => invokeClient<string | null>('GetExdProgress')
 export const refreshExd = () => invokeClient<{ data: ExdWeatherView | null; error: string | null }>('RefreshExd')
 export const getCurrentGame = () => invokeClient<GameResponse | null>('GetCurrentGame')
-export const getGameAreas = () => invokeClient<{ areas: GameArea[]; error: string | null }>('GetGameAreas')
+export const getGameAreas = (refresh = false) =>
+  invokeClient<{ areas: GameArea[]; error: string | null; notice: string | null }>('GetGameAreas', [refresh])
 export const getSavedGameArea = () => invokeClient<number | null>('GetSavedGameArea')
 export const beginGameLogin = (id: string, mode: 'phone' | 'scan' | 'saved', account: string, areaId: number, remember: boolean) =>
   invokeClient<GameResponse>('BeginGameLogin', [id, mode, account, areaId, remember])
@@ -236,6 +238,7 @@ export interface DatabaseMapLocation {
 interface DatabaseResponse<T> {
   data: T | null
   error: string | null
+  notice: string | null
 }
 
 export const searchGameDatabase = (query: string, type: string) =>

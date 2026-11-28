@@ -22,6 +22,7 @@ function Invoke-BuildCommand {
 Push-Location (Join-Path $root 'frontend')
 try {
     Invoke-BuildCommand npm.cmd @('ci', '--no-audit', '--no-fund')
+    Invoke-BuildCommand npm.cmd @('test')
     Invoke-BuildCommand npm.cmd @('run', 'build')
 } finally {
     Pop-Location

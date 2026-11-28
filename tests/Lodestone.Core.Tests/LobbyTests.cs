@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Lodestone.Core.Lobby;
@@ -125,6 +126,49 @@ public sealed class LobbyTests
              {"Areaid":"7","AreaStat":1,"AreaName":"伪造","AreaLobby":"ffxivlobby01.ff14.sdo.com.example.org","AreaOrder":1}];
             """);
         Assert.Equal(1, Assert.Single(areas).Id);
+    }
+
+    [Fact]
+    public async Task AreaDirectoryRefreshesOnDemandAndUsesStaleCacheWhenOffline()
+    {
+        var folder = Directory.CreateTempSubdirectory();
+        var file = Path.Combine(folder.FullName, "serverlist.js");
+        try
+        {
+            const string initial = """
+                var servers=[{"Areaid":"1","AreaStat":1,"AreaName":"旧大区","AreaLobby":"ffxivlobby01.ff14.sdo.com","AreaOrder":1}];
+                """;
+            await File.WriteAllTextAsync(file, initial);
+            File.SetLastWriteTimeUtc(file, Clock.GetUtcNow().UtcDateTime);
+            var handler = new AreaDirectoryHandler();
+            using var directory = new GameAreaDirectory(file, new HttpClient(handler), Clock);
+
+            var fresh = await directory.GetWithStatusAsync();
+            Assert.Equal(1, Assert.Single(fresh.Areas).Id);
+            Assert.False(fresh.UsedFallback);
+            Assert.Equal(0, handler.Requests);
+
+            var refreshed = await directory.GetWithStatusAsync(refresh: true);
+            Assert.Equal(2, Assert.Single(refreshed.Areas).Id);
+            Assert.False(refreshed.UsedFallback);
+            Assert.Equal(1, handler.Requests);
+
+            File.SetLastWriteTimeUtc(file, Clock.GetUtcNow().AddDays(-2).UtcDateTime);
+            handler.Offline = true;
+            var offline = await directory.GetWithStatusAsync();
+            Assert.Equal(2, Assert.Single(offline.Areas).Id);
+            Assert.True(offline.UsedFallback);
+            Assert.Equal(2, handler.Requests);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                directory.GetWithStatusAsync(new CancellationToken(canceled: true), refresh: true));
+            Assert.Equal(2, handler.Requests);
+        }
+        finally
+        {
+            File.Delete(file);
+            folder.Delete();
+        }
     }
 
     [Fact]
@@ -274,6 +318,24 @@ public sealed class LobbyTests
     private sealed class FixedTime : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => DateTimeOffset.FromUnixTimeSeconds(1700000000);
+    }
+
+    private sealed class AreaDirectoryHandler : HttpMessageHandler
+    {
+        internal int Requests { get; private set; }
+        internal bool Offline { get; set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests++;
+            return Task.FromResult(Offline ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                        var servers=[{"Areaid":"2","AreaStat":1,"AreaName":"新大区","AreaLobby":"ffxivlobby02.ff14.sdo.com","AreaOrder":1}];
+                        """)
+                });
+        }
     }
 
     private sealed class FragmentedStream(byte[] input) : MemoryStream(input)
