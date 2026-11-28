@@ -101,6 +101,9 @@ public sealed class ExdTests
             Assert.Equal("fixture-1", reloaded.Version);
             Assert.Equal("测试服务器", reloaded.Character.WorldName(1));
             Assert.Equal(new MarketItem(1, "测试装备", 12), Assert.Single(reloaded.MarketItems.Search("测试装备")));
+            Assert.Equal(new DatabaseItem(2, "测试装备 II", 12, 3),
+                Assert.Single(reloaded.DatabaseItems.Search("装备 II", 10)));
+            Assert.Equal(1, reloaded.Maps.Find(42, 0, null)?.Id);
             Assert.Equal("#123456", reloaded.Character.StainColor(1));
             var matches = reloaded.Character.Candidates(1, new CharacterEquipment("off_hand", 2, 0, 0, 0, 0));
             Assert.Collection(matches, first => Assert.Equal("测试装备", first.Name), second => Assert.Equal("测试装备 II", second.Name));
@@ -152,6 +155,10 @@ public sealed class ExdTests
             ["TerritoryType"] = """
                 {"Name":"test","Map@as(raw)":1,"PlaceName":{"fields":{"Name":"测试地图"}},
                  "PlaceNameRegion":{"value":1,"fields":{"Name":"测试地区"}},"TerritoryIntendedUse@as(raw)":1,"WeatherRate@as(raw)":1}
+                """,
+            ["Map"] = """
+                {"Id":"test/00","PlaceName@as(raw)":42,"PlaceNameSub@as(raw)":0,"PlaceName":{"fields":{"Name":"测试地图"}},
+                 "PlaceNameSub":{"fields":{"Name":""}},"TerritoryType":{"fields":{"Map@as(raw)":1}}}
                 """,
             ["WeatherRate"] = """{"Weather@as(raw)":[1,0],"Rate":[90,0]}""",
             ["Weather"] = """{"Name":"测试天气","Icon":{"path_hr1":"ui/icon/060000/060201_hr1.tex"}}"""

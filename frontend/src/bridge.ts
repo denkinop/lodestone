@@ -210,6 +210,39 @@ export const getRecentMarketItems = (worldId: number, dataCenter: string | null)
 export const getMarketPrices = (worldId: number, dataCenter: string | null, id: number) =>
   invokeClient<MarketResponse<MarketBoard>>('GetMarketPrices', [worldId, dataCenter === null ? null : encodeURIComponent(dataCenter), id])
 
+export interface DatabaseEntry {
+  type: string
+  id: string
+  name: string
+  icon: number
+  summary: string | null
+}
+
+export interface DatabaseDetail {
+  entry: DatabaseEntry
+  description: string | null
+  fields: { label: string; value: string }[]
+  links: { label: string; entries: DatabaseEntry[] }[]
+  map: DatabaseMapLocation | null
+}
+
+export interface DatabaseMapLocation {
+  id: number
+  name: string
+  x: number | null
+  y: number | null
+}
+
+interface DatabaseResponse<T> {
+  data: T | null
+  error: string | null
+}
+
+export const searchGameDatabase = (query: string, type: string) =>
+  invokeClient<DatabaseResponse<DatabaseEntry[]>>('SearchGameDatabase', [encodeURIComponent(query), type])
+export const getGameDatabaseEntry = (type: string, id: string) =>
+  invokeClient<DatabaseResponse<DatabaseDetail>>('GetGameDatabaseEntry', [type, id])
+
 export async function prepareGamePreview(characterId: string, requestId: string) {
   const response = await invokeClient<{
     scene: string | null; textureRoot: string | null; iconRoot: string | null; error: string | null

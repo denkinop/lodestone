@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import AppNavigation from './AppNavigation.vue'
 import CharacterDetails from './CharacterDetails.vue'
 import CharacterSettingsPrompt from './CharacterSettingsPrompt.vue'
+import DatabasePage from './DatabasePage.vue'
 import GameVersionSettings from './GameVersionSettings.vue'
 import GameLogin from './GameLogin.vue'
 import HomePage from './HomePage.vue'
@@ -19,7 +20,7 @@ import {
   type CommunityStatus, type ExdWeatherView, type GameCharacter, type GameResponse, type WardrobeChange,
 } from './bridge'
 
-type Screen = 'home' | 'choose' | 'profile' | 'wardrobe' | 'weather' | 'market' | 'settings'
+type Screen = 'home' | 'choose' | 'profile' | 'wardrobe' | 'weather' | 'market' | 'database' | 'settings'
 const screen = ref<Screen>('home')
 const game = ref<GameResponse>()
 const community = ref<CommunityStatus>()
@@ -448,6 +449,7 @@ onBeforeUnmount(() => {
         @settings="go('settings')" @draft="wardrobeDraft = $event" />
 
       <MarketPage v-if="screen === 'market'" :key="gameCharacter?.id" :character="gameCharacter" />
+      <DatabasePage v-if="screen === 'database'" />
 
       <main v-if="screen === 'choose' && game" class="choose-page">
         <PageHeading title="选择角色">

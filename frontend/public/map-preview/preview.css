@@ -1,0 +1,145 @@
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: #ded6c3;
+  font-family: system-ui, sans-serif;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+}
+
+#map.leaflet-container { background: #ded6c3; font-family: inherit; }
+
+#map .leaflet-control {
+  margin: 0;
+  border: 1px solid #d7dce4;
+  border-radius: 9px;
+  background: #fffffff5;
+  color: #28354b;
+  text-shadow: none;
+  box-shadow: 0 2px 8px #1c273326;
+}
+
+#map .leaflet-top.leaflet-left { top: 10px; left: 10px; }
+#map .leaflet-top.leaflet-right { top: 10px; right: 10px; }
+#map .eorzea-map-bg, #map .eorzea-map-place-name, #map .eorzea-map-range-slider { display: none; }
+#map .eorzea-map-nav { width: auto; font-size: 13px; }
+#map .eorzea-map-nav-aside { position: static; margin: 0; }
+#map .eorzea-map-place-select-container { position: static; opacity: 1; }
+#map .eorzea-map-place-select-container select {
+  display: block;
+  max-width: min(16rem, calc(100vw - 8.5rem));
+  min-height: 32px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  font: 600 13px/1.2 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+#map .eorzea-map-nav-upper, #map .leaflet-control-layers {
+  position: fixed;
+  bottom: 10px;
+}
+#map .eorzea-map-nav-upper {
+  left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+}
+#map .eorza-map-nav-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 29px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #365da4;
+  font: 650 19px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+#map .eorza-map-world { width: 39px; font-size: 12px; }
+#map .eorza-map-nav-button:hover { background: #e8effb; }
+#map .eorzea-map-range-container { display: none; margin: 0; }
+#map .eorzea-map-range-container input[type="range"] {
+  position: static;
+  appearance: auto;
+  width: 70px;
+  height: 25px;
+  margin: 0;
+  transform: none;
+  accent-color: #365da4;
+  cursor: pointer;
+}
+#map .eorzea-map-range-container input[type="range"]::-webkit-slider-thumb {
+  appearance: auto;
+  transform: none;
+  background: none;
+}
+
+#map .leaflet-control-layers { right: 10px; padding: 6px 8px; }
+#map .leaflet-control-layers-scrollbar { height: auto !important; overflow: visible; }
+#map .leaflet-control-layers-overlays { display: flex; gap: 8px; }
+#map .leaflet-control-layers label,
+#map .leaflet-control-layers label > span { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+#map .leaflet-control-layers label span { padding: 0; }
+#map .leaflet-control-layers input[type="checkbox"] {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #365da4;
+}
+#map .leaflet-control-layers .input-after { display: none; }
+#map .eorzea-map-pos {
+  width: auto;
+  height: auto;
+  padding: 5px 8px;
+  transform: none;
+  font: 600 12px/1.25 system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+#map .eorzea-map-pos:empty { display: none; }
+#map :is(button, input, select):focus-visible { outline: 2px solid #365da4; outline-offset: 1px; }
+#map .eorzea-map-label { font-family: system-ui, "Microsoft YaHei UI", sans-serif; }
+#map .eorzea-map-label-area { font-style: normal; }
+
+@media (min-width: 460px) {
+  #map .eorzea-map-range-container { display: flex; align-items: center; }
+}
+
+@media (max-width: 310px) {
+  #map .eorzea-map-nav-upper { left: 6px; bottom: 6px; gap: 1px; }
+  #map .eorza-map-nav-button { width: 25px; }
+  #map .eorza-map-world { width: 32px; }
+  #map .leaflet-control-layers { right: 6px; bottom: 6px; padding: 6px 5px; }
+  #map .leaflet-control-layers-overlays { gap: 4px; }
+  #map .leaflet-control-layers label { font-size: 11px; }
+}
+
+#map-status:not([hidden]) {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 14px;
+  text-align: center;
+  color: #555f70;
+  background: #f3f4f6;
+}

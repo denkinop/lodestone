@@ -20,7 +20,9 @@ public sealed class MarketItemCatalog
     internal static MarketItemCatalog Read(JsonElement rows) => new(rows.EnumerateArray().Select(row =>
         new MarketItem(row[0].GetInt32(), row[1].GetString() ?? "", row[2].GetInt32())));
 
-    public MarketItem Get(int id) => items.GetValueOrDefault(id) ?? new(id, $"物品 #{id}", 0);
+    internal MarketItem? Find(int id) => items.GetValueOrDefault(id);
+
+    public MarketItem Get(int id) => Find(id) ?? new(id, $"物品 #{id}", 0);
 
     public MarketItem[] Search(string query)
     {

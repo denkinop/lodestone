@@ -302,6 +302,7 @@ internal sealed partial class ClientCommands : IDisposable
         MainThread.BeginInvokeOnMainThread(() => browser.SetSession(null, []));
         officialHome.Dispose();
         market.Dispose();
+        garland.Dispose();
         cdn.Dispose();
     }
 

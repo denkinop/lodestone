@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue'
-import MarketItemIcon from './MarketItemIcon.vue'
+import ItemIcon from './ItemIcon.vue'
 import PageHeading from './PageHeading.vue'
 import UiIcon from './UiIcon.vue'
 import { getMarketDataCenters, getMarketPrices, getRecentMarketItems, searchMarketItems,
@@ -227,7 +227,7 @@ watch([worldId, dataCenterQuery], () => {
         <UiIcon name="left" :size="16" />{{ searched ? '返回搜索结果' : '返回最近更新' }}
       </button>
       <div class="market-title market-detail-title">
-        <MarketItemIcon :icon="selected.icon" />
+        <ItemIcon :icon="selected.icon" />
         <div>
           <h2 id="market-item-title" ref="detailHeading" tabindex="-1">{{ selected.name }}</h2>
           <p>{{ scope }} · #{{ gil(selected.id) }}</p>
@@ -278,7 +278,7 @@ watch([worldId, dataCenterQuery], () => {
       <ul v-else class="market-rows">
         <li v-for="item in matches" :key="item.id">
           <button type="button" class="market-item" @click="openItem(item)">
-            <MarketItemIcon :icon="item.icon" />
+            <ItemIcon :icon="item.icon" />
             <span class="market-item-text"><strong>{{ item.name }}</strong><small>#{{ gil(item.id) }}</small></span>
             <UiIcon name="right" :size="18" />
           </button>
@@ -298,7 +298,7 @@ watch([worldId, dataCenterQuery], () => {
       <ul v-else class="market-rows">
         <li v-for="entry in recent" :key="entry.item.id">
           <button type="button" class="market-item" @click="openItem(entry.item)">
-            <MarketItemIcon :icon="entry.item.icon" />
+            <ItemIcon :icon="entry.item.icon" />
             <span class="market-item-text"><strong>{{ entry.item.name }}</strong><small>#{{ gil(entry.item.id) }}</small></span>
             <span class="market-update"><small>{{ showTime(entry.lastUploadTime) }}</small>
               <small v-if="dataCenterQuery && entry.world">{{ entry.world }}</small></span>

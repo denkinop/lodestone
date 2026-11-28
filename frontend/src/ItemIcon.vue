@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import UiIcon from './UiIcon.vue'
 
-const props = defineProps<{ icon: number }>()
+const props = defineProps<{ icon: number; fallback?: string }>()
 const standardResolution = ref<number>()
 const failed = ref(0)
 const source = computed(() => {
@@ -20,15 +20,15 @@ function useFallback() {
 </script>
 
 <template>
-  <span class="market-icon" aria-hidden="true">
+  <span class="item-icon" aria-hidden="true">
     <img v-if="source" :key="source" :src="source" alt="" width="48" height="48" loading="lazy"
       referrerpolicy="no-referrer" @error="useFallback">
-    <UiIcon v-else name="cube" :size="21" />
+    <UiIcon v-else :name="fallback || 'cube'" :size="21" />
   </span>
 </template>
 
 <style scoped>
-.market-icon {
+.item-icon {
   display: grid;
   place-items: center;
   width: 48px;
@@ -38,5 +38,5 @@ function useFallback() {
   background: var(--blue-light);
   color: var(--blue);
 }
-.market-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.item-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
 </style>

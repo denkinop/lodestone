@@ -36,6 +36,9 @@ public sealed class ExdCatalog
     public CharacterData Character { get; }
     public WeatherCatalog Weather { get; }
     public MarketItemCatalog MarketItems { get; }
+    public GameMapCatalog Maps { get; }
+    private readonly Lazy<DatabaseItemCatalog> databaseItems;
+    internal DatabaseItemCatalog DatabaseItems => databaseItems.Value;
 
     private ExdCatalog(JsonElement data, ExdCatalog? fallback)
     {
@@ -53,6 +56,15 @@ public sealed class ExdCatalog
         Character = new CharacterData(data, fallback?.Character);
         MarketItems = data.TryGetProperty("marketItems", out var marketItems) && marketItems.ValueKind == JsonValueKind.Array
             ? MarketItemCatalog.Read(marketItems) : fallback?.MarketItems ?? MarketItemCatalog.Empty;
+        Maps = data.TryGetProperty("mapLocations", out var maps) && maps.ValueKind == JsonValueKind.Array
+            ? GameMapCatalog.Read(maps) : fallback?.Maps ?? GameMapCatalog.Empty;
+        if (data.TryGetProperty("databaseItems", out var rows) && rows.ValueKind == JsonValueKind.Array)
+        {
+            var snapshot = rows.Clone();
+            databaseItems = new(() => DatabaseItemCatalog.Read(snapshot));
+        }
+        else
+            databaseItems = fallback?.databaseItems ?? new(() => DatabaseItemCatalog.Empty);
     }
 
     private static ExdCatalog LoadBundled()

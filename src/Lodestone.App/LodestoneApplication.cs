@@ -68,8 +68,15 @@ public sealed class LodestoneApplication : Application
 #endif
 
     internal static bool IsExternalLink(Uri uri) => OfficialHomeClient.IsOfficialWebUri(uri)
+        || IsInteractiveMapUri(uri)
+        || (uri.Scheme == Uri.UriSchemeHttps && uri.Host is ("garlandtools.cn" or "www.garlandtools.cn") && uri.IsDefaultPort
+            && string.IsNullOrEmpty(uri.UserInfo) && uri.AbsolutePath == "/db/" && string.IsNullOrEmpty(uri.Query))
         || (uri.Scheme == Uri.UriSchemeHttps && uri.Host == "ff14.huijiwiki.com" && uri.IsDefaultPort
             && string.IsNullOrEmpty(uri.UserInfo) && uri.AbsolutePath.StartsWith("/wiki/", StringComparison.Ordinal));
+
+    internal static bool IsInteractiveMapUri(Uri uri) =>
+        uri.Scheme == Uri.UriSchemeHttps && uri.Host == "map.ffcafe.cn" && uri.IsDefaultPort
+        && string.IsNullOrEmpty(uri.UserInfo) && uri.AbsolutePath == "/" && string.IsNullOrEmpty(uri.Query);
 
     internal static bool IsLocalWebViewUri(Uri uri) =>
         uri.Scheme == Uri.UriSchemeHttps && uri.Host == "0.0.0.1" && uri.IsDefaultPort && string.IsNullOrEmpty(uri.UserInfo);

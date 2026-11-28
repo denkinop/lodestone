@@ -30,6 +30,7 @@ internal sealed class XivApiExdImporter(HttpClient http)
             + "ClassJobCategory@as(raw),Rarity,LevelItem@as(raw),LevelEquip,DamagePhys,DamageMag,DefensePhys,DefenseMag,DyeCount,"
             + "BaseParam@as(raw),BaseParamValue,IsUntradable,ItemSearchCategory@as(raw)"),
         ("TerritoryType", "Name,Map@as(raw),PlaceName.Name,PlaceNameRegion.Name,TerritoryIntendedUse@as(raw),WeatherRate@as(raw)"),
+        ("Map", "Id,PlaceName@as(raw),PlaceName.Name,PlaceNameSub@as(raw),PlaceNameSub.Name,TerritoryType.Map@as(raw)"),
         ("WeatherRate", "Rate,Weather@as(raw)"),
         ("Weather", "Name,Icon")
     ];
@@ -75,14 +76,19 @@ internal sealed class XivApiExdImporter(HttpClient http)
             progress, token).ConfigureAwait(false);
         var items = new List<object[]>();
         var marketItems = new List<object[]>();
+        var databaseItems = new List<object[]>();
         foreach (var (id, row) in tables["Item"])
         {
             token.ThrowIfCancellationRequested();
             if (Equipment(id, row, tables) is { } item)
                 items.Add(item);
-            if (id > 0 && row.TryGetProperty("IsUntradable", out var untradable) && untradable.ValueKind == JsonValueKind.False
-                && Number(row, "ItemSearchCategory@as(raw)") > 0 && Name(row) is { Length: > 0 } name)
-                marketItems.Add([id, name, Number(row, "Icon@as(raw)")]);
+            if (id <= 0 || Name(row) is not { Length: > 0 } name)
+                continue;
+            var icon = Number(row, "Icon@as(raw)");
+            databaseItems.Add([id, name, icon, Number(row, "LevelItem@as(raw)")]);
+            if (row.TryGetProperty("IsUntradable", out var untradable) && untradable.ValueKind == JsonValueKind.False
+                && Number(row, "ItemSearchCategory@as(raw)") > 0)
+                marketItems.Add([id, name, icon]);
         }
 
         var snapshot = new
@@ -94,6 +100,8 @@ internal sealed class XivApiExdImporter(HttpClient http)
             wardrobeSlotCoverage = true,
             items,
             marketItems = marketItems.Count > 0 ? marketItems : null,
+            databaseItems,
+            mapLocations = MapLocations(tables["Map"]),
             stains = tables["Stain"].Where(pair => pair.Key > 0).Select(pair =>
             {
                 var name = Name(pair.Value);
@@ -344,11 +352,32 @@ internal sealed class XivApiExdImporter(HttpClient http)
         return value.TryGetUInt64(out var model) ? model : unchecked((ulong)value.GetInt64());
     }
 
+    private static IEnumerable<object[]> MapLocations(Dictionary<int, JsonElement> rows)
+    {
+        foreach (var (id, row) in rows)
+        {
+            if (id <= 0 || row.GetProperty("Id").GetString() is not { Length: > 0 } path || path == "default/00")
+                continue;
+            var place = Number(row, "PlaceName@as(raw)");
+            var subPlace = Number(row, "PlaceNameSub@as(raw)");
+            var name = RelatedName(row.GetProperty("PlaceName"));
+            var subName = RelatedName(row.GetProperty("PlaceNameSub"));
+            if ((place > 0 || subPlace > 0) && (name.Length > 0 || subName.Length > 0))
+            {
+                var territory = row.GetProperty("TerritoryType");
+                var isDefault = territory.ValueKind == JsonValueKind.Object
+                    && territory.TryGetProperty("fields", out var fields) && fields.ValueKind == JsonValueKind.Object
+                    && fields.TryGetProperty("Map@as(raw)", out var map) && map.ValueKind == JsonValueKind.Number && map.GetInt32() == id;
+                yield return [id, place, subPlace, name, subName, isDefault];
+            }
+        }
+    }
+
     private static int Number(JsonElement row, string field) => row.GetProperty(field).GetInt32();
     private static int OptionalNumber(JsonElement value) => value.ValueKind == JsonValueKind.Null ? 0 : value.GetInt32();
     private static string Name(JsonElement row) => row.GetProperty("Name").GetString()?.Trim() ?? "";
     private static string RelatedName(JsonElement relation) =>
-        relation.TryGetProperty("fields", out var fields) && fields.ValueKind == JsonValueKind.Object
+        relation.ValueKind == JsonValueKind.Object && relation.TryGetProperty("fields", out var fields) && fields.ValueKind == JsonValueKind.Object
             && fields.TryGetProperty("Name", out var name) ? name.GetString()?.Trim() ?? "" : "";
 
     private sealed record Release(string Version, string Schema);
